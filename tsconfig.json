@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "types": ["node"],
+    "allowJs": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "scripts/lib/repo-settings-target.mjs",
+    "scripts/lib/launchpad-attribution.mjs",
+    "scripts/lib/gh-api-errors.mjs",
+    "scripts/lib/bootstrap.mjs",
+    "vitest.config.ts",
+    "eslint.config.js"
+  ]
+}
