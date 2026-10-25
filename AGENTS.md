@@ -1,6 +1,6 @@
 # Agent instructions
 
-**Project:** {{PROJECT_NAME}} — {{PROJECT_PURPOSE}}
+**Project:** Project Factory — Tool to help set-up new projects
 
 This file is the single source of truth for how agents work in this repository. Other agent entry points only link here.
 

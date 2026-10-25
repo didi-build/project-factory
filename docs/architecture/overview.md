@@ -1,10 +1,10 @@
-# Architecture overview — {{PROJECT_NAME}}
+# Architecture overview — Project Factory
 
 Replace this file with your system’s architecture. Keep it short; link to deeper docs as the project grows.
 
 ## Purpose
 
-{{PROJECT_PURPOSE}}
+Tool to help set-up new projects
 
 ## Boundaries
 
