@@ -1,0 +1,16 @@
+{
+  "name": "project-factory",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+  },
+  "vars": {
+    "PROJECT_FACTORY_GH_APP_ID": "5471521",
+    "PROJECT_FACTORY_GH_INSTALLATION_ID": "175254357",
+    "PROJECT_FACTORY_GH_ORG": "didi-build",
+    "PROJECT_FACTORY_TEMPLATE_REPO": "didi-build/launchpad",
+    "PROJECT_FACTORY_LINEAR_TEAM": "Didi Build",
+  },
+}

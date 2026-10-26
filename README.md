@@ -42,6 +42,30 @@ On every commit, the pre-commit hook runs **lint-staged** (conflict-marker guard
 
 As tests grow, consider moving `npm run test` to a **pre-push** hook (or running only affected tests on commit) so commits stay fast. CI should always run the full `npm run check`.
 
+## Project factory MCP (bots)
+
+Remote MCP server on Cloudflare Worker `project-factory` (see [ADR 0004](./docs/decisions/0004-project-factory-architecture.md)).
+
+- **Health:** `GET https://project-factory.<your-subdomain>.workers.dev/health` (no auth)
+- **MCP:** `POST https://project-factory.<your-subdomain>.workers.dev/mcp`
+- **Auth:** `Authorization: Bearer <PROJECT_FACTORY_BEARER_TOKEN>` on every request except `/health`
+- **Traceability:** `X-Factory-Caller: <bot name>` (recorded in audit logs)
+
+Tools in this slice: `create_project_repo`, `project_status`.
+
+### Worker secrets (reference)
+
+Secrets are set on Worker `project-factory` in the Cloudflare dashboard (see ADR section 11). For re-setting from a maintainer machine:
+
+```bash
+npx wrangler secret put PROJECT_FACTORY_GH_PRIVATE_KEY --name project-factory
+npx wrangler secret put PROJECT_FACTORY_LINEAR_API_KEY --name project-factory
+npx wrangler secret put PROJECT_FACTORY_CLOUDFLARE_API_TOKEN --name project-factory
+npx wrangler secret put PROJECT_FACTORY_BEARER_TOKEN --name project-factory
+```
+
+Do not use `--secrets-file` or declare secrets in `wrangler.jsonc` in a way that wipes existing Worker secrets on deploy.
+
 ## Environment variables
 
 Copy [`.env.example`](./.env.example) to `.env` for local use. Document each name in README or `docs/architecture/`; document names only in `.env.example`; never commit values.

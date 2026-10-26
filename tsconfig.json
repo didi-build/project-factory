@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "WebWorker"],
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
@@ -12,7 +12,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["node"],
+    "types": ["node", "@cloudflare/workers-types"],
     "allowJs": true
   },
   "include": [
