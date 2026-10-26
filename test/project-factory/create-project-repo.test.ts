@@ -22,20 +22,64 @@ afterEach(() => {
 });
 
 describe("createProjectRepo", () => {
-  it("dry_run makes no write calls", async () => {
-    const writes: string[] = [];
-    const github = await createMockGitHub((method, path) => {
-      if (method !== "GET") {
-        writes.push(`${method} ${path}`);
+  it("dry_run uses only GET and does not mint installation tokens", async () => {
+    const methods: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      methods.push(method);
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (url.includes("/app/installations/") && !url.includes("access_tokens")) {
+        return new Response(
+          JSON.stringify({
+            id: 175254357,
+            account: { login: "didi-build" },
+            repository_selection: "all",
+          }),
+          { status: 200 },
+        );
       }
-      return { status: 404 };
-    });
+      if (url.includes("access_tokens")) {
+        return new Response("unexpected token mint", { status: 500 });
+      }
+      if (url.endsWith("/accounts") && url.includes("cloudflare.com")) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            result: [{ id: "cf-account-1", name: "Didi Build" }],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/workers/scripts/demo-app") && url.endsWith("/secrets")) {
+        return new Response(JSON.stringify({ success: true, result: [] }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/workers/scripts/demo-app")) {
+        return new Response(
+          JSON.stringify({ success: false, errors: [{ message: "not found" }] }),
+          {
+            status: 404,
+          },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    };
     const result = await createProjectRepo(
       {
-        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: "fake-cf-token",
+        },
         requestId: "req-1",
         caller: "test",
-        github,
+        fetchImpl,
       },
       {
         name: "demo-app",
@@ -44,8 +88,23 @@ describe("createProjectRepo", () => {
         dry_run: true,
       },
     );
-    expect(writes).toEqual([]);
-    expect(result).toMatchObject({ status: "planned", dry_run: true });
+    expect(methods.length).toBeGreaterThan(0);
+    expect(methods.every((m) => m === "GET")).toBe(true);
+    expect(result).toMatchObject({
+      status: "planned",
+      dry_run: true,
+      github: {
+        installation_read_ok: true,
+        repo_exists: null,
+        reads_requiring_installation_token: expect.arrayContaining([
+          expect.objectContaining({
+            method: "GET",
+            path: "/repos/didi-build/demo-app",
+          }),
+        ]),
+      },
+      cloudflare: { worker_exists: false, worker_secret_names: [] },
+    });
   });
 
   it("is idempotent for an existing factory-owned repo", async () => {

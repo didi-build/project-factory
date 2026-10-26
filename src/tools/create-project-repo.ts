@@ -13,6 +13,7 @@ import {
 import { STANDARD_FACTORY_LABELS, standardLabelNames } from "../factory/labels.js";
 import { validateProjectName } from "../factory/naming.js";
 import { GitHubClient } from "../github/client.js";
+import { buildCreateProjectRepoDryRunPlan } from "./dry-run-plan.js";
 import type { FactoryError, FactoryStep, FactorySuccess } from "./types.js";
 
 export type CreateProjectRepoInput = {
@@ -28,6 +29,7 @@ export type CreateProjectRepoContext = {
   requestId: string;
   caller: string;
   github?: GitHubClient;
+  fetchImpl?: typeof fetch;
 };
 
 function parseTemplateRepo(template: string): { owner: string; repo: string } {
@@ -94,31 +96,19 @@ export async function createProjectRepo(
   }
 
   if (dryRun) {
-    steps.push({
-      id: "create_repo",
-      status: "planned",
-      detail: `generate or converge ${repoFull} from ${ctx.env.PROJECT_FACTORY_TEMPLATE_REPO}`,
-    });
-    steps.push({ id: "set_topic", status: "planned", detail: FACTORY_TOPIC });
-    steps.push({
-      id: "branch_protection",
-      status: "planned",
-      detail: `protect ${DEFAULT_BRANCH}`,
-    });
-    for (const label of STANDARD_FACTORY_LABELS) {
-      steps.push({ id: `label_${label.name}`, status: "planned", detail: label.name });
-    }
-    const status = "planned";
+    const plan = await buildCreateProjectRepoDryRunPlan(
+      ctx.env,
+      {
+        name: input.name,
+        org,
+        templateRepo: ctx.env.PROJECT_FACTORY_TEMPLATE_REPO,
+        isPrivate,
+      },
+      { fetchImpl: ctx.fetchImpl },
+    );
     const plannedResult = {
       request_id: ctx.requestId,
-      status,
-      steps,
-      warnings,
-      repo_url: repoUrl,
-      default_branch: DEFAULT_BRANCH,
-      labels: standardLabelNames(),
-      protection_ok: false,
-      dry_run: true,
+      ...plan,
     };
     writeAuditEntry({
       request_id: ctx.requestId,
@@ -132,7 +122,7 @@ export async function createProjectRepo(
         approval_ref: input.approval_ref,
       },
       approval_ref: input.approval_ref,
-      status,
+      status: plan.status,
       resources: { repo_url: repoUrl },
       duration_ms: Date.now() - started,
     });
