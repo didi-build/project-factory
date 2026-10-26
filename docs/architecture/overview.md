@@ -13,8 +13,10 @@ Tool to help set-up new projects
 
 ## Interfaces
 
-- **Inbound:** APIs, webhooks, CLI, UI — who calls this system and how.
-- **Outbound:** Databases, queues, third-party APIs — what this system calls.
+- **Inbound:** Remote MCP over `POST /mcp` on Worker `project-factory`, with bearer auth (`PROJECT_FACTORY_BEARER_TOKEN`) and `X-Factory-Caller` for audit.
+- **Outbound:** GitHub App installation API (repo creation), Linear GraphQL API (`PROJECT_FACTORY_LINEAR_API_KEY`), and (Step 3) Cloudflare account API.
+
+Factory tools: `create_project_repo`, `create_linear_project`, `provision_cloudflare` (planned), and read-only `project_status`. All write tools default to `dry_run: true` and require `approval_ref`.
 
 ## Environments
 
