@@ -8,6 +8,8 @@ export type AuditInput = {
   status: string;
   resources?: Record<string, string | undefined>;
   duration_ms: number;
+  github_installation_token_minted?: boolean;
+  github_installation_token_permissions?: Record<string, string>;
 };
 
 export function writeAuditEntry(entry: AuditInput): void {

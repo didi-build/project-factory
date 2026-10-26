@@ -125,6 +125,11 @@ export async function createProjectRepo(
       status: plan.status,
       resources: { repo_url: repoUrl },
       duration_ms: Date.now() - started,
+      github_installation_token_minted: plan.github.github_installation_token_minted,
+      github_installation_token_permissions: plan.github
+        .github_installation_token_minted
+        ? { ...plan.github.github_installation_token_permissions }
+        : undefined,
     });
     return plannedResult;
   }

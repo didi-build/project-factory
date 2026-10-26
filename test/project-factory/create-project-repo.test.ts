@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
+import { DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS } from "../../src/github/dry-run-installation.js";
 import { createProjectRepo } from "../../src/tools/create-project-repo.js";
 import { createMockGitHub, fakePkcs8Pem } from "./github-mock.js";
 
@@ -11,6 +12,8 @@ const env: ProjectFactoryEnv = {
   PROJECT_FACTORY_LINEAR_TEAM: "Didi Build",
 };
 
+const INSTALLATION_TOKEN = "fake-dry-run-installation-token-do-not-leak";
+
 let privateKeyPem: string;
 
 beforeAll(async () => {
@@ -21,55 +24,80 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+type RecordedRequest = {
+  method: string;
+  url: string;
+  body?: unknown;
+};
+
+function buildDryRunFetch(
+  handler: (req: RecordedRequest) => { status: number; body?: unknown },
+) {
+  return async (input: RequestInfo | URL, init?: RequestInit) => {
+    const method = (init?.method ?? "GET").toUpperCase();
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    let body: unknown;
+    if (init?.body) {
+      body = JSON.parse(String(init.body));
+    }
+    const recorded = { method, url, body };
+    const result = handler(recorded);
+    if (result.status === 204) {
+      return new Response(null, { status: 204 });
+    }
+    return new Response(result.body ? JSON.stringify(result.body) : "", {
+      status: result.status,
+    });
+  };
+}
+
 describe("createProjectRepo", () => {
-  it("dry_run uses only GET and does not mint installation tokens", async () => {
-    const methods: string[] = [];
-    const fetchImpl: typeof fetch = async (input, init) => {
-      const method = (init?.method ?? "GET").toUpperCase();
-      methods.push(method);
-      const url =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.href
-            : input.url;
-      if (url.includes("/app/installations/") && !url.includes("access_tokens")) {
-        return new Response(
-          JSON.stringify({
+  it("dry_run mints one read-only installation token and uses GET only afterward", async () => {
+    const requests: RecordedRequest[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchImpl = buildDryRunFetch((req) => {
+      requests.push(req);
+      if (
+        req.url.includes("/app/installations/") &&
+        req.url.includes("access_tokens")
+      ) {
+        return { status: 201, body: { token: INSTALLATION_TOKEN } };
+      }
+      if (req.url.includes("/app/installations/")) {
+        return {
+          status: 200,
+          body: {
             id: 175254357,
             account: { login: "didi-build" },
             repository_selection: "all",
-          }),
-          { status: 200 },
-        );
-      }
-      if (url.includes("access_tokens")) {
-        return new Response("unexpected token mint", { status: 500 });
-      }
-      if (url.endsWith("/accounts") && url.includes("cloudflare.com")) {
-        return new Response(
-          JSON.stringify({
-            success: true,
-            result: [{ id: "cf-account-1", name: "Didi Build" }],
-          }),
-          { status: 200 },
-        );
-      }
-      if (url.includes("/workers/scripts/demo-app") && url.endsWith("/secrets")) {
-        return new Response(JSON.stringify({ success: true, result: [] }), {
-          status: 200,
-        });
-      }
-      if (url.includes("/workers/scripts/demo-app")) {
-        return new Response(
-          JSON.stringify({ success: false, errors: [{ message: "not found" }] }),
-          {
-            status: 404,
           },
-        );
+        };
       }
-      return new Response("{}", { status: 404 });
-    };
+      if (req.url.endsWith("/repos/didi-build/demo-app")) {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      if (req.url.includes("cloudflare.com") && req.url.endsWith("/accounts")) {
+        return {
+          status: 200,
+          body: { success: true, result: [{ id: "cf-account-1", name: "Didi Build" }] },
+        };
+      }
+      if (
+        req.url.includes("/workers/scripts/demo-app") &&
+        req.url.endsWith("/secrets")
+      ) {
+        return { status: 200, body: { success: true, result: [] } };
+      }
+      if (req.url.includes("/workers/scripts/demo-app")) {
+        return {
+          status: 404,
+          body: { success: false, errors: [{ message: "not found" }] },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+
     const result = await createProjectRepo(
       {
         env: {
@@ -88,22 +116,81 @@ describe("createProjectRepo", () => {
         dry_run: true,
       },
     );
-    expect(methods.length).toBeGreaterThan(0);
-    expect(methods.every((m) => m === "GET")).toBe(true);
+
+    const nonGet = requests.filter((r) => r.method !== "GET");
+    expect(nonGet).toHaveLength(1);
+    expect(nonGet[0].url).toContain("/access_tokens");
+    expect(nonGet[0].body).toEqual({
+      permissions: DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
+    });
+    expect(nonGet[0].body).not.toHaveProperty("repositories");
+
+    const cloudflareWrites = requests.filter(
+      (r) =>
+        r.url.includes("cloudflare.com") && r.method !== "GET" && r.method !== "HEAD",
+    );
+    expect(cloudflareWrites).toHaveLength(0);
+
     expect(result).toMatchObject({
       status: "planned",
       dry_run: true,
       github: {
-        installation_read_ok: true,
-        repo_exists: null,
-        reads_requiring_installation_token: expect.arrayContaining([
-          expect.objectContaining({
-            method: "GET",
-            path: "/repos/didi-build/demo-app",
-          }),
-        ]),
+        github_installation_token_minted: true,
+        repo_exists: false,
+        factory_owned: false,
+        conflict_not_factory_owned: false,
       },
-      cloudflare: { worker_exists: false, worker_secret_names: [] },
+    });
+
+    const serialized = JSON.stringify(result);
+    const auditLine = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(serialized).not.toContain(INSTALLATION_TOKEN);
+    expect(auditLine).not.toContain(INSTALLATION_TOKEN);
+    expect(auditLine).toContain('"github_installation_token_minted":true');
+    expect(auditLine).toContain('"metadata":"read"');
+  });
+
+  it("dry_run reports conflict when repo exists without factory topic", async () => {
+    const fetchImpl = buildDryRunFetch((req) => {
+      if (req.url.includes("access_tokens")) {
+        return { status: 201, body: { token: INSTALLATION_TOKEN } };
+      }
+      if (req.url.includes("/app/installations/")) {
+        return { status: 200, body: { id: 1, account: { login: "didi-build" } } };
+      }
+      if (req.url.endsWith("/repos/didi-build/conflict-app")) {
+        return { status: 200, body: { full_name: "didi-build/conflict-app" } };
+      }
+      if (req.url.endsWith("/topics")) {
+        return { status: 200, body: { names: ["other"] } };
+      }
+      if (req.url.includes("/protection")) {
+        return { status: 404, body: { message: "Branch not protected" } };
+      }
+      return { status: 200, body: { success: true, result: [] } };
+    });
+
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-conflict",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "conflict-app",
+        description: "Demo",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: true,
+      },
+    );
+
+    expect(result).toMatchObject({
+      github: {
+        repo_exists: true,
+        factory_owned: false,
+        conflict_not_factory_owned: true,
+      },
     });
   });
 
@@ -162,13 +249,24 @@ describe("createProjectRepo", () => {
 
   it("writes an audit entry", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const github = await createMockGitHub(() => ({ status: 404 }));
+    const fetchImpl = buildDryRunFetch((req) => {
+      if (req.url.includes("access_tokens")) {
+        return { status: 201, body: { token: INSTALLATION_TOKEN } };
+      }
+      if (req.url.includes("/app/installations/")) {
+        return { status: 200, body: { id: 1, account: { login: "didi-build" } } };
+      }
+      if (req.url.endsWith("/repos/didi-build/demo-app")) {
+        return { status: 404 };
+      }
+      return { status: 200, body: { success: true, result: [] } };
+    });
     await createProjectRepo(
       {
         env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
         requestId: "req-audit",
         caller: "bot",
-        github,
+        fetchImpl,
       },
       {
         name: "demo-app",
@@ -185,12 +283,14 @@ describe("createProjectRepo", () => {
       event: string;
       tool: string;
       caller: string;
+      github_installation_token_minted?: boolean;
     };
     expect(parsed).toMatchObject({
       event: "factory_call",
       tool: "create_project_repo",
       caller: "bot",
+      github_installation_token_minted: true,
     });
-    expect(auditLine).not.toMatch(/installation-token|BEGIN PRIVATE KEY/i);
+    expect(auditLine).not.toContain(INSTALLATION_TOKEN);
   });
 });

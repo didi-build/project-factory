@@ -1,13 +1,15 @@
 import type { CloudflareDryRunRead } from "../cloudflare/dry-run-reads.js";
 import { cloudflareDryRunReads } from "../cloudflare/dry-run-reads.js";
 import type { ProjectFactoryEnv } from "../env.js";
+import { protectionLooksCorrect } from "../factory/branch-protection.js";
 import { DEFAULT_BRANCH, FACTORY_TOPIC } from "../factory/constants.js";
 import { STANDARD_FACTORY_LABELS, standardLabelNames } from "../factory/labels.js";
+import { GitHubAppClient } from "../github/app-client.js";
 import {
-  GitHubAppClient,
-  installationScopedRepoReads,
-  type BlockedInstallationRead,
-} from "../github/app-client.js";
+  DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
+  installationGet,
+  mintDryRunInstallationToken,
+} from "../github/dry-run-installation.js";
 import type { FactoryStep } from "./types.js";
 
 export type GithubDryRunDiscovery = {
@@ -19,10 +21,12 @@ export type GithubDryRunDiscovery = {
   };
   installation_read_ok: boolean;
   installation_error?: string;
-  reads_requiring_installation_token: BlockedInstallationRead[];
-  repo_exists: null;
-  factory_owned: null;
-  conflict_not_factory_owned: null;
+  github_installation_token_minted: boolean;
+  github_installation_token_permissions?: typeof DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS;
+  repo_exists: boolean | null;
+  factory_owned: boolean | null;
+  conflict_not_factory_owned: boolean;
+  protection_ok: boolean | null;
 };
 
 export type DryRunPlan = {
@@ -33,7 +37,7 @@ export type DryRunPlan = {
   repo_url: string;
   default_branch: typeof DEFAULT_BRANCH;
   labels: string[];
-  protection_ok: false;
+  protection_ok: boolean;
   github: GithubDryRunDiscovery;
   cloudflare: CloudflareDryRunRead;
 };
@@ -51,6 +55,7 @@ export async function buildCreateProjectRepoDryRunPlan(
     appClient?: GitHubAppClient;
   },
 ): Promise<DryRunPlan> {
+  const fetchImpl = deps?.fetchImpl ?? fetch;
   const repoFull = `${input.org}/${input.name}`;
   const repoUrl = `https://github.com/${repoFull}`;
   const steps: FactoryStep[] = [];
@@ -71,35 +76,33 @@ export async function buildCreateProjectRepoDryRunPlan(
     steps.push({ id: `label_${label.name}`, status: "planned", detail: label.name });
   }
 
-  const readsRequiringInstallationToken = installationScopedRepoReads(
-    input.org,
-    input.name,
-  );
-
   const github: GithubDryRunDiscovery = {
     installation_read_ok: false,
-    reads_requiring_installation_token: readsRequiringInstallationToken,
+    github_installation_token_minted: false,
     repo_exists: null,
     factory_owned: null,
-    conflict_not_factory_owned: null,
+    conflict_not_factory_owned: false,
+    protection_ok: null,
   };
+
+  let protectionOk = false;
 
   if (!env.PROJECT_FACTORY_GH_PRIVATE_KEY) {
     warnings.push(
-      "PROJECT_FACTORY_GH_PRIVATE_KEY not set; skipped GitHub App installation GET",
+      "PROJECT_FACTORY_GH_PRIVATE_KEY not set; skipped GitHub installation reads",
     );
   } else if (
     !env.PROJECT_FACTORY_GH_APP_ID ||
     !env.PROJECT_FACTORY_GH_INSTALLATION_ID
   ) {
-    warnings.push("GitHub App vars missing; skipped GitHub App installation GET");
+    warnings.push("GitHub App vars missing; skipped GitHub installation reads");
   } else {
     const app =
       deps?.appClient ??
       new GitHubAppClient({
         appId: env.PROJECT_FACTORY_GH_APP_ID,
         privateKeyPem: env.PROJECT_FACTORY_GH_PRIVATE_KEY,
-        fetchImpl: deps?.fetchImpl,
+        fetchImpl,
       });
     const installation = await app.get(
       `/app/installations/${env.PROJECT_FACTORY_GH_INSTALLATION_ID}`,
@@ -133,23 +136,102 @@ export async function buildCreateProjectRepoDryRunPlan(
       });
     }
 
-    warnings.push(
-      "Repo collision checks need an installation access token. Dry run does not call POST /app/installations/{installation_id}/access_tokens. Use the reads_requiring_installation_token list for required GET paths.",
-    );
-    for (const read of readsRequiringInstallationToken) {
+    const mint = await mintDryRunInstallationToken({
+      appId: env.PROJECT_FACTORY_GH_APP_ID,
+      installationId: env.PROJECT_FACTORY_GH_INSTALLATION_ID,
+      privateKeyPem: env.PROJECT_FACTORY_GH_PRIVATE_KEY,
+      fetchImpl,
+    });
+    if (!mint.ok) {
+      warnings.push(`installation token mint failed: ${mint.message}`);
       steps.push({
-        id: `blocked_${read.path.replace(/\//g, "_")}`,
-        status: "planned",
-        detail: `${read.method} ${read.path} (${read.reason})`,
+        id: "mint_installation_token",
+        status: "failed",
+        detail: `HTTP ${mint.status}`,
       });
+    } else {
+      github.github_installation_token_minted = true;
+      github.github_installation_token_permissions =
+        DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS;
+      steps.push({
+        id: "mint_installation_token",
+        status: "done",
+        detail: "read-only permissions for dry run GETs",
+      });
+
+      const token = mint.token;
+      const repo = await installationGet(token, `/repos/${repoFull}`, fetchImpl);
+      if (!repo.ok) {
+        if (repo.status === 404) {
+          github.repo_exists = false;
+          github.factory_owned = false;
+          github.conflict_not_factory_owned = false;
+          github.protection_ok = false;
+          steps.push({ id: "read_repo", status: "done", detail: "not found" });
+        } else {
+          warnings.push(`GET /repos/${repoFull} failed: ${repo.message}`);
+          steps.push({ id: "read_repo", status: "failed", detail: repo.message });
+        }
+      } else {
+        github.repo_exists = true;
+        steps.push({ id: "read_repo", status: "done", detail: repoUrl });
+
+        const topics = await installationGet(
+          token,
+          `/repos/${repoFull}/topics`,
+          fetchImpl,
+        );
+        let topicNames: string[] = [];
+        if (topics.ok && topics.data && typeof topics.data === "object") {
+          topicNames = (topics.data as { names?: string[] }).names ?? [];
+        } else if (!topics.ok) {
+          warnings.push(`GET topics failed: ${topics.message}`);
+        }
+        github.factory_owned = topicNames.includes(FACTORY_TOPIC);
+        github.conflict_not_factory_owned =
+          github.repo_exists === true && !github.factory_owned;
+        steps.push({
+          id: "read_topics",
+          status: topics.ok ? "done" : "failed",
+          detail: github.factory_owned ? FACTORY_TOPIC : "no factory marker",
+        });
+
+        const protection = await installationGet(
+          token,
+          `/repos/${repoFull}/branches/${DEFAULT_BRANCH}/protection`,
+          fetchImpl,
+        );
+        if (protection.ok) {
+          protectionOk = protectionLooksCorrect(
+            protection.data as Record<string, unknown>,
+          );
+          github.protection_ok = protectionOk;
+          steps.push({
+            id: "read_branch_protection",
+            status: "done",
+            detail: protectionOk ? "matches target" : "drift detected",
+          });
+        } else if (protection.status === 404) {
+          github.protection_ok = false;
+          protectionOk = false;
+          steps.push({
+            id: "read_branch_protection",
+            status: "done",
+            detail: "not configured",
+          });
+        } else {
+          warnings.push(`GET branch protection failed: ${protection.message}`);
+          steps.push({
+            id: "read_branch_protection",
+            status: "failed",
+            detail: protection.message,
+          });
+        }
+      }
     }
   }
 
-  const cloudflare = await cloudflareDryRunReads(
-    env,
-    input.name,
-    deps?.fetchImpl ?? fetch,
-  );
+  const cloudflare = await cloudflareDryRunReads(env, input.name, fetchImpl);
   if (cloudflare.skipped) {
     warnings.push(cloudflare.skipped);
   } else if (cloudflare.error) {
@@ -170,7 +252,7 @@ export async function buildCreateProjectRepoDryRunPlan(
     repo_url: repoUrl,
     default_branch: DEFAULT_BRANCH,
     labels: standardLabelNames(),
-    protection_ok: false,
+    protection_ok: protectionOk,
     github,
     cloudflare,
   };

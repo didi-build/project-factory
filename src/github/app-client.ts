@@ -55,24 +55,3 @@ export class GitHubAppClient {
     return this.jwt;
   }
 }
-
-export type BlockedInstallationRead = {
-  method: "GET";
-  path: string;
-  reason: "requires_installation_access_token";
-  mint_would_call: "POST /app/installations/{installation_id}/access_tokens";
-};
-
-export function installationScopedRepoReads(
-  org: string,
-  repo: string,
-): BlockedInstallationRead[] {
-  const base = `/repos/${org}/${repo}`;
-  const paths = [base, `${base}/topics`, `${base}/branches/main/protection`];
-  return paths.map((path) => ({
-    method: "GET",
-    path,
-    reason: "requires_installation_access_token",
-    mint_would_call: "POST /app/installations/{installation_id}/access_tokens",
-  }));
-}
