@@ -14,8 +14,10 @@ import {
 import { validateProjectName } from "../factory/naming.js";
 import { GitHubClient } from "../github/client.js";
 import {
-  ensureGithubEnvironment,
+  ensurePreviewGithubEnvironment,
+  ensureProductionGithubEnvironment,
   resolveGithubUserId,
+  verifyProductionGithubEnvironment,
 } from "../github/environments.js";
 import { mapGithubFailure } from "../github/github-errors.js";
 import { PROVISION_INSTALLATION_TOKEN_PERMISSIONS } from "../github/provision-permissions.js";
@@ -165,6 +167,17 @@ export async function provisionCloudflare(
       return factoryError("missing_secret", "PROJECT_FACTORY_GH_PRIVATE_KEY");
     }
 
+    const reviewerLogin = ctx.env.PROJECT_FACTORY_GH_PRODUCTION_REVIEWER?.trim();
+    if (!reviewerLogin) {
+      auditStatus = "missing_secret";
+      failedStep = "resolve_reviewer";
+      return factoryError(
+        "missing_secret",
+        "PROJECT_FACTORY_GH_PRODUCTION_REVIEWER",
+        "resolve_reviewer",
+      );
+    }
+
     const cfClientResult = CloudflareFactoryClient.fromEnv(ctx.env, ctx.fetchImpl);
     if (!cfClientResult.ok) {
       auditStatus = "missing_secret";
@@ -259,39 +272,75 @@ export async function provisionCloudflare(
       }
     }
 
-    let reviewerId: number | undefined;
-    const reviewerLogin = ctx.env.PROJECT_FACTORY_GH_PRODUCTION_REVIEWER?.trim();
-    if (reviewerLogin) {
-      const resolved = await resolveGithubUserId(github, reviewerLogin);
-      if (!resolved.ok) {
-        auditStatus = resolved.error.error.code;
-        failedStep = resolved.error.error.step;
-        return resolved.error;
-      }
-      reviewerId = resolved.id;
+    const resolvedReviewer = await resolveGithubUserId(github, reviewerLogin);
+    if (!resolvedReviewer.ok) {
+      auditStatus = resolvedReviewer.error.error.code;
+      failedStep = resolvedReviewer.error.error.step;
+      return resolvedReviewer.error;
+    }
+    const reviewerId = resolvedReviewer.id;
+
+    const previewEnv = await ensurePreviewGithubEnvironment(github, repoFull);
+    if (!previewEnv.ok) {
+      auditStatus = previewEnv.error.error.code;
+      failedStep = "github_environment_preview";
+      return previewEnv.error;
+    }
+    if (previewEnv.created) {
+      repaired = true;
+      steps.push({
+        id: "github_environment_preview",
+        status: "done",
+        detail: "preview",
+      });
     } else {
-      warnings.push(
-        "PROJECT_FACTORY_GH_PRODUCTION_REVIEWER not set; production environment created without reviewers",
-      );
+      steps.push({
+        id: "github_environment_preview",
+        status: "skipped",
+        detail: "preview",
+      });
     }
 
-    for (const envName of ["preview", "production"] as const) {
-      const stepId = `github_environment_${envName}`;
-      const ensured = await ensureGithubEnvironment(github, repoFull, envName, {
-        productionReviewerId: envName === "production" ? reviewerId : undefined,
-      });
-      if (!ensured.ok) {
-        auditStatus = ensured.error.error.code;
-        failedStep = stepId;
-        return ensured.error;
-      }
-      if (ensured.created) {
-        repaired = true;
-        steps.push({ id: stepId, status: "done", detail: envName });
-      } else {
-        steps.push({ id: stepId, status: "skipped", detail: envName });
-      }
+    const productionEnv = await ensureProductionGithubEnvironment(
+      github,
+      repoFull,
+      reviewerId,
+    );
+    if (!productionEnv.ok) {
+      auditStatus = productionEnv.error.error.code;
+      failedStep = "github_environment_production";
+      return productionEnv.error;
     }
+    if (productionEnv.created) {
+      repaired = true;
+      steps.push({
+        id: "github_environment_production",
+        status: "done",
+        detail: "production",
+      });
+    } else {
+      steps.push({
+        id: "github_environment_production",
+        status: "skipped",
+        detail: "production",
+      });
+    }
+
+    const verified = await verifyProductionGithubEnvironment(
+      github,
+      repoFull,
+      reviewerId,
+    );
+    if (!verified.ok) {
+      auditStatus = verified.error.error.code;
+      failedStep = verified.error.error.step ?? "verify_production_environment";
+      return verified.error;
+    }
+    steps.push({
+      id: "verify_production_environment",
+      status: "done",
+      detail: "reviewer and main-only deployment branch policy",
+    });
 
     const previewSecretExists = await repoSecretExists(
       github,

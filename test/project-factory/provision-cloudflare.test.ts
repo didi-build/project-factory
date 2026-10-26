@@ -1,5 +1,4 @@
-import nacl from "tweetnacl";
-import { encodeBase64 } from "tweetnacl-util";
+import sodium from "libsodium-wrappers";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
 import { FACTORY_TOPIC } from "../../src/factory/constants.js";
@@ -10,12 +9,17 @@ import {
 } from "../../src/factory/provision-constants.js";
 import { provisionCloudflare } from "../../src/tools/provision-cloudflare.js";
 import {
-  EXPECTED_CF_PREVIEW_TOKEN_POLICY,
-  EXPECTED_CF_TOKEN_POLICY,
+  EXPECTED_CF_PREVIEW_TOKEN_POLICIES,
+  EXPECTED_CF_PRODUCTION_TOKEN_POLICIES,
+  EXPECTED_PRODUCTION_DEPLOYMENT_BRANCH_POLICY_BODY,
+  EXPECTED_PRODUCTION_ENVIRONMENT_PUT_BODY,
   EXPECTED_PROVISION_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
   EXPECTED_PROVISION_WRITE_INSTALLATION_TOKEN_PERMISSIONS,
 } from "./expected-provision-payloads.js";
 import { fakePkcs8Pem } from "./github-mock.js";
+
+const REVIEWER_LOGIN = "diademshoukralla";
+const REVIEWER_ID = 4242;
 
 const env: ProjectFactoryEnv = {
   PROJECT_FACTORY_GH_APP_ID: "5471521",
@@ -23,7 +27,7 @@ const env: ProjectFactoryEnv = {
   PROJECT_FACTORY_GH_ORG: "didi-build",
   PROJECT_FACTORY_TEMPLATE_REPO: "didi-build/launchpad",
   PROJECT_FACTORY_LINEAR_TEAM: "Didi Build",
-  PROJECT_FACTORY_GH_PRODUCTION_REVIEWER: "diadem-maintainer",
+  PROJECT_FACTORY_GH_PRODUCTION_REVIEWER: REVIEWER_LOGIN,
 };
 
 const INSTALLATION_TOKEN = "fake-provision-installation-token-do-not-leak";
@@ -36,8 +40,12 @@ let githubKeyId: string;
 
 beforeAll(async () => {
   privateKeyPem = await fakePkcs8Pem();
-  const keyPair = nacl.box.keyPair();
-  githubPublicKey = encodeBase64(keyPair.publicKey);
+  await sodium.ready;
+  const keyPair = sodium.crypto_box_keypair();
+  githubPublicKey = sodium.to_base64(
+    keyPair.publicKey,
+    sodium.base64_variants.ORIGINAL,
+  );
   githubKeyId = "repo-key-1";
 });
 
@@ -49,6 +57,18 @@ type RecordedRequest = {
   method: string;
   url: string;
   body?: unknown;
+};
+
+type GithubState = {
+  factoryTopic: boolean;
+  repoSecrets: string[];
+  productionSecrets: string[];
+  environments: string[];
+  productionReview: {
+    reviewerId: number | null;
+    branchPolicies: string[];
+    failReadBack?: boolean;
+  };
 };
 
 function buildFetch(
@@ -82,22 +102,14 @@ function buildFetch(
   };
 }
 
-function githubHandlers(
-  state: {
-    factoryTopic: boolean;
-    repoSecrets: string[];
-    productionSecrets: string[];
-    environments: string[];
-  },
-  requests: RecordedRequest[],
-) {
+function githubHandlers(state: GithubState, requests: RecordedRequest[]) {
   return (req: RecordedRequest) => {
     requests.push(req);
     if (req.url.includes("/app/installations/") && req.url.includes("access_tokens")) {
       return { status: 201, body: { token: INSTALLATION_TOKEN } };
     }
-    if (req.url.endsWith("/users/diadem-maintainer")) {
-      return { status: 200, body: { id: 4242, login: "diadem-maintainer" } };
+    if (req.url.endsWith(`/users/${REVIEWER_LOGIN}`)) {
+      return { status: 200, body: { id: REVIEWER_ID, login: REVIEWER_LOGIN } };
     }
     if (req.url.endsWith("/repos/didi-build/demo-app")) {
       return { status: 200, body: { full_name: "didi-build/demo-app" } };
@@ -149,6 +161,40 @@ function githubHandlers(
         ? { status: 200, body: { name } }
         : { status: 404, body: { message: "Not Found" } };
     }
+    if (
+      req.url.includes("/environments/production/deployment-branch-policies") &&
+      req.method === "GET"
+    ) {
+      const policies = state.productionReview.failReadBack
+        ? []
+        : state.productionReview.branchPolicies.map((name) => ({ name }));
+      return { status: 200, body: { branch_policies: policies } };
+    }
+    if (
+      req.method === "GET" &&
+      req.url.endsWith("/environments/production") &&
+      !req.url.includes("/secrets") &&
+      !req.url.includes("deployment-branch-policies")
+    ) {
+      if (!state.environments.includes("production")) {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      const reviewerId = state.productionReview.failReadBack
+        ? 9999
+        : state.productionReview.reviewerId;
+      return {
+        status: 200,
+        body: {
+          name: "production",
+          reviewers: reviewerId
+            ? [{ type: "User", reviewer: { id: reviewerId, login: REVIEWER_LOGIN } }]
+            : [],
+          deployment_branch_policy: state.productionReview.failReadBack
+            ? { protected_branches: true, custom_branch_policies: false }
+            : { protected_branches: false, custom_branch_policies: true },
+        },
+      };
+    }
     if (req.url.endsWith("/environments") && req.method === "GET") {
       return {
         status: 200,
@@ -185,17 +231,44 @@ function githubHandlers(
     }
     if (
       req.method === "PUT" &&
-      req.url.includes("/environments/") &&
+      req.url.endsWith("/environments/production") &&
       !req.url.includes("/secrets/")
     ) {
-      const envName = req.url.split("/environments/")[1]?.split("/")[0];
-      if (envName && !state.environments.includes(envName)) {
-        state.environments.push(envName);
+      const body = req.body as {
+        reviewers?: { type: string; id: number }[];
+        deployment_branch_policy?: {
+          protected_branches: boolean;
+          custom_branch_policies: boolean;
+        };
+      };
+      if (!state.environments.includes("production")) {
+        state.environments.push("production");
       }
-      return { status: 200, body: { name: envName } };
+      const reviewer = body.reviewers?.[0];
+      if (reviewer?.type === "User") {
+        state.productionReview.reviewerId = reviewer.id;
+      }
+      return { status: 200, body: { name: "production" } };
     }
-    if (req.url.includes("deployment-branch-policies") && req.method === "POST") {
-      return { status: 200, body: { id: 1, name: "main" } };
+    if (
+      req.method === "PUT" &&
+      req.url.endsWith("/environments/preview") &&
+      !req.url.includes("/secrets/")
+    ) {
+      if (!state.environments.includes("preview")) {
+        state.environments.push("preview");
+      }
+      return { status: 200, body: { name: "preview" } };
+    }
+    if (
+      req.url.includes("/environments/production/deployment-branch-policies") &&
+      req.method === "POST"
+    ) {
+      const body = req.body as { name?: string };
+      if (body.name && !state.productionReview.branchPolicies.includes(body.name)) {
+        state.productionReview.branchPolicies.push(body.name);
+      }
+      return { status: 200, body: { id: 1, name: body.name ?? "main" } };
     }
     return { status: 404, body: { message: "unmocked github" } };
   };
@@ -239,8 +312,13 @@ function cloudflareHandlers(requests: RecordedRequest[], workers: Set<string>) {
           success: true,
           result: [
             {
-              id: "pg-workers-edit",
-              name: "Workers Scripts Edit",
+              id: "pg-workers-editor",
+              name: "Workers Editor",
+              scopes: ["account"],
+            },
+            {
+              id: "pg-workers-scripts-read",
+              name: "Workers Scripts Read",
               scopes: ["account"],
             },
           ],
@@ -276,17 +354,23 @@ function cloudflareHandlers(requests: RecordedRequest[], workers: Set<string>) {
   };
 }
 
+function defaultGithubState(overrides?: Partial<GithubState>): GithubState {
+  return {
+    factoryTopic: true,
+    repoSecrets: [],
+    productionSecrets: [],
+    environments: [],
+    productionReview: { reviewerId: null, branchPolicies: [] },
+    ...overrides,
+  };
+}
+
 describe("provisionCloudflare", () => {
   it("dry_run makes no Cloudflare or GitHub writes except installation token mint", async () => {
     const requests: RecordedRequest[] = [];
     const workers = new Set<string>();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const state = {
-      factoryTopic: true,
-      repoSecrets: [],
-      productionSecrets: [],
-      environments: [],
-    };
+    const state = defaultGithubState();
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
@@ -334,12 +418,7 @@ describe("provisionCloudflare", () => {
   it("creates workers, environments, tokens, and secrets on first run", async () => {
     const requests: RecordedRequest[] = [];
     const workers = new Set<string>();
-    const state = {
-      factoryTopic: true,
-      repoSecrets: [] as string[],
-      productionSecrets: [] as string[],
-      environments: [] as string[],
-    };
+    const state = defaultGithubState();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
@@ -372,6 +451,20 @@ describe("provisionCloudflare", () => {
       preview_worker: { name: "demo-app-preview" },
     });
 
+    const productionPut = requests.find(
+      (r) => r.method === "PUT" && r.url.endsWith("/environments/production"),
+    );
+    expect(productionPut?.body).toEqual(EXPECTED_PRODUCTION_ENVIRONMENT_PUT_BODY);
+
+    const branchPolicyPost = requests.find(
+      (r) =>
+        r.method === "POST" &&
+        r.url.includes("/environments/production/deployment-branch-policies"),
+    );
+    expect(branchPolicyPost?.body).toEqual(
+      EXPECTED_PRODUCTION_DEPLOYMENT_BRANCH_POLICY_BODY,
+    );
+
     expect(workers.has("demo-app")).toBe(true);
     expect(workers.has("demo-app-preview")).toBe(true);
     expect(state.repoSecrets).toEqual(
@@ -390,11 +483,11 @@ describe("provisionCloudflare", () => {
     expect(mintBodies).toHaveLength(2);
     expect(mintBodies[0]).toMatchObject({
       name: "project-factory-demo-app-deploy-preview",
-      policies: [EXPECTED_CF_PREVIEW_TOKEN_POLICY],
+      policies: EXPECTED_CF_PREVIEW_TOKEN_POLICIES,
     });
     expect(mintBodies[1]).toMatchObject({
       name: "project-factory-demo-app-deploy-production",
-      policies: [EXPECTED_CF_TOKEN_POLICY],
+      policies: EXPECTED_CF_PRODUCTION_TOKEN_POLICIES,
     });
 
     const mintAudit = logSpy.mock.calls
@@ -418,18 +511,62 @@ describe("provisionCloudflare", () => {
     expect(serialized).not.toContain(INSTALLATION_TOKEN);
   });
 
+  it("fails closed when production environment read-back does not match", async () => {
+    const requests: RecordedRequest[] = [];
+    const workers = new Set<string>();
+    const state = defaultGithubState({
+      productionReview: { reviewerId: null, branchPolicies: [], failReadBack: true },
+    });
+    const fetchImpl = buildFetch((req) => {
+      if (req.url.includes("api.github.com")) {
+        return githubHandlers(state, requests)(req);
+      }
+      return cloudflareHandlers(requests, workers)(req);
+    });
+
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-verify-fail",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+
+    expect(result).toMatchObject({
+      error: { code: "upstream_error", step: "verify_production_environment" },
+    });
+    expect(state.productionSecrets).toHaveLength(0);
+    const productionSecretPut = requests.find(
+      (r) =>
+        r.method === "PUT" &&
+        r.url.includes("/environments/production/secrets/") &&
+        r.url.includes(ENV_SECRET_CLOUDFLARE_API_TOKEN_PRODUCTION),
+    );
+    expect(productionSecretPut).toBeUndefined();
+  });
+
   it("rerun is idempotent and skips existing resources", async () => {
     const requests: RecordedRequest[] = [];
     const workers = new Set(["demo-app", "demo-app-preview"]);
-    const state = {
-      factoryTopic: true,
+    const state = defaultGithubState({
       repoSecrets: [
         REPO_SECRET_CLOUDFLARE_API_TOKEN_PREVIEW,
         REPO_SECRET_CLOUDFLARE_ACCOUNT_ID,
       ],
       productionSecrets: [ENV_SECRET_CLOUDFLARE_API_TOKEN_PRODUCTION],
       environments: ["preview", "production"],
-    };
+      productionReview: { reviewerId: REVIEWER_ID, branchPolicies: ["main"] },
+    });
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
@@ -469,12 +606,7 @@ describe("provisionCloudflare", () => {
   it("refuses non-factory repos", async () => {
     const requests: RecordedRequest[] = [];
     const workers = new Set<string>();
-    const state = {
-      factoryTopic: false,
-      repoSecrets: [],
-      productionSecrets: [],
-      environments: [],
-    };
+    const state = defaultGithubState({ factoryTopic: false });
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
@@ -529,15 +661,37 @@ describe("provisionCloudflare", () => {
     });
   });
 
+  it("returns missing_secret when production reviewer var is unset", async () => {
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRODUCTION_REVIEWER: undefined,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-no-reviewer",
+        caller: "test",
+        fetchImpl: buildFetch(() => ({ status: 404, body: {} })),
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({
+      error: {
+        code: "missing_secret",
+        message: "PROJECT_FACTORY_GH_PRODUCTION_REVIEWER",
+      },
+    });
+  });
+
   it("maps Cloudflare permission errors", async () => {
     const requests: RecordedRequest[] = [];
     const workers = new Set<string>();
-    const state = {
-      factoryTopic: true,
-      repoSecrets: [],
-      productionSecrets: [],
-      environments: [],
-    };
+    const state = defaultGithubState();
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);

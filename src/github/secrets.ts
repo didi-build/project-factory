@@ -1,13 +1,16 @@
-import { decodeBase64, encodeBase64 } from "tweetnacl-util";
-import sodium from "tweetsodium";
+import sodium from "libsodium-wrappers";
 import type { GitHubClient } from "./client.js";
 import { mapGithubFailure } from "./github-errors.js";
 
-export function sealGitHubSecret(plaintext: string, publicKeyBase64: string): string {
-  const key = decodeBase64(publicKeyBase64);
-  const message = new TextEncoder().encode(plaintext);
-  const sealed = sodium.seal(message, key);
-  return encodeBase64(sealed);
+export async function sealGitHubSecret(
+  plaintext: string,
+  publicKeyBase64: string,
+): Promise<string> {
+  await sodium.ready;
+  const key = sodium.from_base64(publicKeyBase64, sodium.base64_variants.ORIGINAL);
+  const message = sodium.from_string(plaintext);
+  const sealed = sodium.crypto_box_seal(message, key);
+  return sodium.to_base64(sealed, sodium.base64_variants.ORIGINAL);
 }
 
 export async function putRepoSecret(
@@ -27,7 +30,7 @@ export async function putRepoSecret(
     };
   }
   const { key_id, key } = keyResult.data as { key_id: string; key: string };
-  const encrypted = sealGitHubSecret(plaintext, key);
+  const encrypted = await sealGitHubSecret(plaintext, key);
   const put = await github.request(
     "PUT",
     `/repos/${repoFull}/actions/secrets/${secretName}`,
@@ -60,7 +63,7 @@ export async function putEnvironmentSecret(
     };
   }
   const { key_id, key } = keyResult.data as { key_id: string; key: string };
-  const encrypted = sealGitHubSecret(plaintext, key);
+  const encrypted = await sealGitHubSecret(plaintext, key);
   const put = await github.request(
     "PUT",
     `/repos/${repoFull}/environments/${environment}/secrets/${secretName}`,

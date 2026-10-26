@@ -1,3 +1,7 @@
+import {
+  assertMintPoliciesSafe,
+  buildWorkerDeployTokenPolicies,
+} from "./deploy-token-policy.js";
 import { FACTORY_WORKER_TAG } from "../factory/provision-constants.js";
 import type { ProjectFactoryEnv } from "../env.js";
 
@@ -295,20 +299,48 @@ export class CloudflareFactoryClient {
         error: mapCfFailure(permissionGroups, "cf_permission_groups"),
       };
     }
-    const workersEdit = permissionGroups.data.find(
-      (g) => g.name === "Workers Scripts Edit" || g.name === "Workers Editor",
+    const workersEditor = permissionGroups.data.find(
+      (g) => g.name === "Workers Editor" || g.name === "Individual Workers Editor",
     );
-    if (!workersEdit) {
+    const workersScriptsRead = permissionGroups.data.find(
+      (g) => g.name === "Workers Scripts Read",
+    );
+    if (!workersEditor || !workersScriptsRead) {
       return {
         ok: false,
         error: mapCfFailure(
-          { status: 400, message: "Workers Scripts Edit permission group not found" },
+          {
+            status: 400,
+            message:
+              "Workers Editor or Workers Scripts Read permission group not found",
+          },
           "cf_permission_groups",
         ),
       };
     }
 
-    const resourceKey = `com.cloudflare.api.account.${account.accountId}.worker.script.${workerName}`;
+    const policies = buildWorkerDeployTokenPolicies(account.accountId, workerName, {
+      workersEditor: { id: workersEditor.id, name: workersEditor.name },
+      workersScriptsRead: {
+        id: workersScriptsRead.id,
+        name: workersScriptsRead.name,
+      },
+    });
+    try {
+      assertMintPoliciesSafe(policies);
+    } catch (err) {
+      return {
+        ok: false,
+        error: mapCfFailure(
+          {
+            status: 400,
+            message: err instanceof Error ? err.message : "unsafe mint policy",
+          },
+          "cf_mint_token",
+        ),
+      };
+    }
+
     const create = await cfJson<{ id: string; value: string }>(
       this.token,
       "POST",
@@ -316,13 +348,7 @@ export class CloudflareFactoryClient {
       this.fetchImpl,
       {
         name: tokenName,
-        policies: [
-          {
-            effect: "allow",
-            resources: { [resourceKey]: "*" },
-            permission_groups: [{ id: workersEdit.id, name: workersEdit.name }],
-          },
-        ],
+        policies,
       },
     );
     if (!create.ok) {

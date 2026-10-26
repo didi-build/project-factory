@@ -59,9 +59,7 @@
     "@modelcontextprotocol/server": "2.3.1",
     "agents": "0.30.1",
     "jose": "6.1.0",
-    "tweetnacl": "^1.0.3",
-    "tweetnacl-util": "^0.15.1",
-    "tweetsodium": "^0.0.4",
+    "libsodium-wrappers": "0.7.15",
     "zod": "4.6.7"
   }
 }
