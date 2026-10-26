@@ -31,9 +31,9 @@ This ADR does not change the locked block. Diadem's words below are copied exact
 
 The locked block's **Access rules**, verbatim:
 
-> * The service is a remote MCP server on Cloudflare Workers (TypeScript). Bots call it as an MCP connector, authenticated with a bearer secret.
-> * The GitHub App private key and all other credentials live only as secrets of the deployed service. Never in a bot, never in chat or Linear, never reachable by PR-branch code (same rule as: no token reachable by PR-branch code gets D1 Edit or R2 Edit).
-> * No bot creates the GitHub repo or App for this project; Diadem does (see the Ready for maintainer tickets).
+> - The service is a remote MCP server on Cloudflare Workers (TypeScript). Bots call it as an MCP connector, authenticated with a bearer secret.
+> - The GitHub App private key and all other credentials live only as secrets of the deployed service. Never in a bot, never in chat or Linear, never reachable by PR-branch code (same rule as: no token reachable by PR-branch code gets D1 Edit or R2 Edit).
+> - No bot creates the GitHub repo or App for this project; Diadem does (see the Ready for maintainer tickets).
 
 The locked **What the factory does** table (steps 1 to 3, the access each needs, and that Diadem sets up access) is the source of truth for scope. Out of scope per the epic: per-project D1 and R2, custom domains and DNS, any UI.
 
@@ -66,14 +66,14 @@ The locked **What the factory does** table (steps 1 to 3, the access each needs,
 
 All factory credentials are **Worker secrets on Worker `project-factory`**. No GitHub repo, bot, chat, Linear ticket or PR-branch workflow can read them. Only the deployed production code of `project-factory` can, and that code changes only through a reviewed merge to `main` plus Diadem's approval of the GitHub `production` environment (section 8).
 
-| Secret (exact name) | Where | Value | Minimum scope | Who can reach it |
-| --- | --- | --- | --- | --- |
-| `PROJECT_FACTORY_GH_PRIVATE_KEY` | Worker secret, Worker `project-factory` | Full `.pem` of App `didi-project-factory` | The App's approved permissions (above). The Worker mints 1-hour installation tokens per call and never stores them. Install stays All repositories, because the App must configure the repos it creates. | Production Worker code only |
-| `PROJECT_FACTORY_LINEAR_API_KEY` | Worker secret, Worker `project-factory` | Linear personal API key labelled "Project factory" (DIDI-842 option A) | **Write** (not Admin), team access **Didi Build** only if Linear offers it | Production Worker code only |
-| `PROJECT_FACTORY_CLOUDFLARE_API_TOKEN` | Worker secret, Worker `project-factory` | Account API token `project-factory` (DIDI-843) | Account › **Workers Scripts › Edit** and Account › **Account API Tokens › Edit**, Didi Build account only. No D1, R2, DNS or zone permissions on this token. Used to manage Workers and to mint per-project deploy tokens (section 10, Q1). | Production Worker code only |
-| `PROJECT_FACTORY_BEARER_TOKEN` | Worker secret, Worker `project-factory`, plus the bot's MCP connector config (handed over through the secure form) | Random, at least 32 characters | n/a | Production Worker code and the calling bot |
-| `CLOUDFLARE_API_TOKEN_PRODUCTION` | GitHub **`production` environment** secret on `didi-build/project-factory` | Account API token `project-factory-ci-production` | Workers **Editor scoped to Worker `project-factory` only** (the Worker-scoped option we-met uses, ADR 0017). If the dashboard offers only account-wide scope, use Account › Workers Scripts › Edit; that is acceptable **only** because the environment is limited to `main` and needs Diadem's approval. | Approved production deploy jobs on `main` only |
-| `CLOUDFLARE_ACCOUNT_ID` | GitHub repository secret on `didi-build/project-factory` | Didi Build account id | Not a credential | CI |
+| Secret (exact name)                    | Where                                                                                                              | Value                                                                  | Minimum scope                                                                                                                                                                                                                                                                                             | Who can reach it                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `PROJECT_FACTORY_GH_PRIVATE_KEY`       | Worker secret, Worker `project-factory`                                                                            | Full `.pem` of App `didi-project-factory`                              | The App's approved permissions (above). The Worker mints 1-hour installation tokens per call and never stores them. Install stays All repositories, because the App must configure the repos it creates.                                                                                                  | Production Worker code only                    |
+| `PROJECT_FACTORY_LINEAR_API_KEY`       | Worker secret, Worker `project-factory`                                                                            | Linear personal API key labelled "Project factory" (DIDI-842 option A) | **Write** (not Admin), team access **Didi Build** only if Linear offers it                                                                                                                                                                                                                                | Production Worker code only                    |
+| `PROJECT_FACTORY_CLOUDFLARE_API_TOKEN` | Worker secret, Worker `project-factory`                                                                            | Account API token `project-factory` (DIDI-843)                         | Account › **Workers Scripts › Edit** and Account › **Account API Tokens › Edit**, Didi Build account only. No D1, R2, DNS or zone permissions on this token. Used to manage Workers and to mint per-project deploy tokens (section 10, Q1).                                                               | Production Worker code only                    |
+| `PROJECT_FACTORY_BEARER_TOKEN`         | Worker secret, Worker `project-factory`, plus the bot's MCP connector config (handed over through the secure form) | Random, at least 32 characters                                         | n/a                                                                                                                                                                                                                                                                                                       | Production Worker code and the calling bot     |
+| `CLOUDFLARE_API_TOKEN_PRODUCTION`      | GitHub **`production` environment** secret on `didi-build/project-factory`                                         | Account API token `project-factory-ci-production`                      | Workers **Editor scoped to Worker `project-factory` only** (the Worker-scoped option we-met uses, ADR 0017). If the dashboard offers only account-wide scope, use Account › Workers Scripts › Edit; that is acceptable **only** because the environment is limited to `main` and needs Diadem's approval. | Approved production deploy jobs on `main` only |
+| `CLOUDFLARE_ACCOUNT_ID`                | GitHub repository secret on `didi-build/project-factory`                                                           | Didi Build account id                                                  | Not a credential                                                                                                                                                                                                                                                                                          | CI                                             |
 
 **Handling rules for the code (DIDI-844):**
 
@@ -166,15 +166,15 @@ project_status(input: { name: string }): { github: ...; linear: ...; cloudflare:
 
 ### 9. Steps that need Diadem's approval
 
-| Step | Why | Where he approves |
-| --- | --- | --- |
-| Starting any new project (yes + name) | Product call (DIDI-847) | Chat, quoted verbatim on Linear, passed as `approval_ref` |
-| Any production deploy of the factory or of a factory-made project | Standing rule | GitHub `production` environment approval |
-| Any change to App permissions, token scopes, or what the factory creates | Locked block | Urgent Ready for maintainer ticket |
-| D1 or R2 for any project | D1/R2 rule | Manual, outside the factory |
-| DNS or custom domains | Individual approval | Outside the factory |
-| Merging factory PRs | AGENTS.md | GitHub review |
-| Deleting test repos | Factory never deletes | Diadem, by hand |
+| Step                                                                     | Why                     | Where he approves                                         |
+| ------------------------------------------------------------------------ | ----------------------- | --------------------------------------------------------- |
+| Starting any new project (yes + name)                                    | Product call (DIDI-847) | Chat, quoted verbatim on Linear, passed as `approval_ref` |
+| Any production deploy of the factory or of a factory-made project        | Standing rule           | GitHub `production` environment approval                  |
+| Any change to App permissions, token scopes, or what the factory creates | Locked block            | Urgent Ready for maintainer ticket                        |
+| D1 or R2 for any project                                                 | D1/R2 rule              | Manual, outside the factory                               |
+| DNS or custom domains                                                    | Individual approval     | Outside the factory                                       |
+| Merging factory PRs                                                      | AGENTS.md               | GitHub review                                             |
+| Deleting test repos                                                      | Factory never deletes   | Diadem, by hand                                           |
 
 ### 10. Product decisions (Diadem, Oct 26, 2026)
 
