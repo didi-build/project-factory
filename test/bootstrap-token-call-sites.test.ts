@@ -60,9 +60,7 @@ function envValueContainsTokenLeak(value: string | undefined) {
 }
 
 function assertEnvHasNoCredentialMaterial(env: Record<string, string | undefined>) {
-  for (const key of gitConfigEnvKeys(env)) {
-    expect(envValueContainsTokenLeak(env[key])).toBe(false);
-  }
+  expect(gitConfigEnvKeys(env)).toEqual([]);
   for (const value of Object.values(env)) {
     expect(envValueContainsTokenLeak(value)).toBe(false);
   }
@@ -72,9 +70,7 @@ function assertRepoSettingsEnv(env: Record<string, string | undefined>) {
   expect(env.GH_TOKEN).toBe(FAKE_TOKEN);
   expect(env.BOOTSTRAP_TOKEN).toBeUndefined();
   expect(env.GITHUB_TOKEN).toBeUndefined();
-  for (const key of gitConfigEnvKeys(env)) {
-    expect(envValueContainsTokenLeak(env[key])).toBe(false);
-  }
+  expect(gitConfigEnvKeys(env)).toEqual([]);
   for (const [key, value] of Object.entries(env)) {
     if (key === "GH_TOKEN") {
       continue;

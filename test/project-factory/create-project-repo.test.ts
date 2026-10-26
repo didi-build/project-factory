@@ -1,10 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
-import { targetBranchProtectionPayload } from "../../src/factory/branch-protection.js";
 import { FACTORY_TOPIC } from "../../src/factory/constants.js";
-import { STANDARD_FACTORY_LABELS } from "../../src/factory/labels.js";
-import { DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS } from "../../src/github/dry-run-installation.js";
 import { createProjectRepo } from "../../src/tools/create-project-repo.js";
+import {
+  EXPECTED_BRANCH_PROTECTION_PUT_BODY,
+  EXPECTED_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
+  EXPECTED_FACTORY_LABEL_POST_BODIES,
+} from "./expected-github-payloads.js";
 import {
   createMockGitHub,
   fakePkcs8Pem,
@@ -129,7 +131,7 @@ describe("createProjectRepo", () => {
     expect(nonGet).toHaveLength(1);
     expect(nonGet[0].url).toContain("/access_tokens");
     expect(nonGet[0].body).toEqual({
-      permissions: DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
+      permissions: EXPECTED_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
     });
     expect(nonGet[0].body).not.toHaveProperty("repositories");
 
@@ -334,12 +336,41 @@ describe("createProjectRepo", () => {
     const protectionPut = calls.find(
       (c) => c.method === "PUT" && c.path.includes("/protection"),
     );
-    expect(protectionPut?.body).toEqual(targetBranchProtectionPayload());
+    expect(protectionPut?.body).toEqual(EXPECTED_BRANCH_PROTECTION_PUT_BODY);
     const labelPosts = calls.filter(
       (c) => c.method === "POST" && c.path.endsWith("/labels"),
     );
     expect(labelPosts).toHaveLength(3);
-    expect(labelPosts.map((c) => c.body)).toEqual(STANDARD_FACTORY_LABELS);
+    expect(labelPosts.map((c) => c.body)).toEqual(EXPECTED_FACTORY_LABEL_POST_BODIES);
+  });
+
+  it("returns missing_secret and audits when GitHub private key is malformed", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchImpl = async () => {
+      throw new Error("GitHub fetch must not run when JWT mint fails");
+    };
+    const result = await createProjectRepo(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: "not-a-valid-pem",
+        },
+        requestId: "req-bad-pem",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        description: "Demo",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({ error: { code: "missing_secret" } });
+    const auditLine = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((line) => line.includes("factory_call"));
+    expect(auditLine).toContain('"status":"missing_secret"');
   });
 
   it("returns pending_bootstrap when protection is 404 right after generate", async () => {

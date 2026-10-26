@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
-import { DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS } from "../../src/github/dry-run-installation.js";
 import { buildCreateProjectRepoDryRunPlan } from "../../src/tools/dry-run-plan.js";
+import { EXPECTED_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS } from "./expected-github-payloads.js";
 import { fakePkcs8Pem } from "./github-mock.js";
 
 const envBase: ProjectFactoryEnv = {
@@ -44,7 +44,7 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
           if (url.includes("access_tokens")) {
             const body = init?.body ? JSON.parse(String(init.body)) : undefined;
             expect(body).toEqual({
-              permissions: DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
+              permissions: EXPECTED_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
             });
             expect(body).not.toHaveProperty("repositories");
             return new Response(JSON.stringify({ token: INSTALLATION_TOKEN }), {

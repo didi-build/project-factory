@@ -1,7 +1,4 @@
-import {
-  GitHubClient,
-  WRITE_INSTALLATION_TOKEN_PERMISSIONS,
-} from "../../src/github/client.js";
+import { GitHubClient } from "../../src/github/client.js";
 
 export type RecordedGithubCall = {
   method: string;
@@ -52,8 +49,6 @@ export async function createMockGitHub(
     fetchImpl: fetchImpl as typeof fetch,
   });
 }
-
-export { WRITE_INSTALLATION_TOKEN_PERMISSIONS };
 
 export async function fakePkcs8Pem(): Promise<string> {
   const keyPair = await crypto.subtle.generateKey(

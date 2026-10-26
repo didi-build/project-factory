@@ -122,10 +122,20 @@ export class GitHubClient {
     if (this.installationToken) {
       return { ok: true, token: this.installationToken };
     }
-    const jwt = await createGitHubAppJwt(
-      this.options.appId,
-      this.options.privateKeyPem,
-    );
+    let jwt: string;
+    try {
+      jwt = await createGitHubAppJwt(this.options.appId, this.options.privateKeyPem);
+    } catch {
+      return {
+        ok: false,
+        error: {
+          status: 401,
+          code: "missing_secret",
+          message: "invalid GitHub app private key",
+          retryable: false,
+        },
+      };
+    }
     const response = await this.fetchImpl(
       `https://api.github.com/app/installations/${this.options.installationId}/access_tokens`,
       {

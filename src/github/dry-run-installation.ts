@@ -15,7 +15,12 @@ export async function mintDryRunInstallationToken(options: {
   fetchImpl?: typeof fetch;
 }): Promise<DryRunMintResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const jwt = await createGitHubAppJwt(options.appId, options.privateKeyPem);
+  let jwt: string;
+  try {
+    jwt = await createGitHubAppJwt(options.appId, options.privateKeyPem);
+  } catch {
+    return { ok: false, status: 401, message: "invalid GitHub app private key" };
+  }
   const response = await fetchImpl(
     `https://api.github.com/app/installations/${options.installationId}/access_tokens`,
     {

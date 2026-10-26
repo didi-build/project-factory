@@ -1,9 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  GitHubClient,
-  WRITE_INSTALLATION_TOKEN_PERMISSIONS,
-} from "../../src/github/client.js";
+import { GitHubClient } from "../../src/github/client.js";
+import { EXPECTED_WRITE_INSTALLATION_TOKEN_PERMISSIONS } from "../project-factory/expected-github-payloads.js";
 import { normalizePrivateKeyPem } from "../../src/github/pem.js";
 import { fakePkcs8Pem } from "../project-factory/github-mock.js";
 
@@ -28,7 +26,9 @@ describe("GitHubClient installation token mint", () => {
       },
     });
     await client.request("GET", "/repos/o/r");
-    expect(mintBody).toEqual({ permissions: WRITE_INSTALLATION_TOKEN_PERMISSIONS });
+    expect(mintBody).toEqual({
+      permissions: EXPECTED_WRITE_INSTALLATION_TOKEN_PERMISSIONS,
+    });
     expect(mintBody).not.toHaveProperty("repositories");
   });
 
@@ -46,6 +46,20 @@ describe("GitHubClient installation token mint", () => {
         }
         return new Response("{}", { status: 200 });
       },
+    });
+    const result = await client.request("GET", "/repos/o/r");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("missing_secret");
+    }
+  });
+
+  it("maps malformed private key to missing_secret without throwing", async () => {
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: "not-valid-pem",
+      fetchImpl: async () => new Response("{}", { status: 200 }),
     });
     const result = await client.request("GET", "/repos/o/r");
     expect(result.ok).toBe(false);
