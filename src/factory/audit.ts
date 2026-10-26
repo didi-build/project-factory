@@ -24,3 +24,18 @@ export function writeAuditEntry(entry: AuditInput): void {
     }),
   );
 }
+
+export type TokenMintAuditInput = {
+  request_id: string;
+  token_name: string;
+  token_id: string;
+};
+
+export function writeTokenMintAudit(entry: TokenMintAuditInput): void {
+  console.log(
+    JSON.stringify({
+      event: "token_mint",
+      ...entry,
+    }),
+  );
+}

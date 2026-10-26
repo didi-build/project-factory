@@ -13,8 +13,8 @@ Tool to help set-up new projects
 
 ## Interfaces
 
-- **Inbound:** APIs, webhooks, CLI, UI — who calls this system and how.
-- **Outbound:** Databases, queues, third-party APIs — what this system calls.
+- **Inbound:** MCP over `POST /mcp` on Worker `project-factory` (bearer auth). Tools: `create_project_repo`, `provision_cloudflare`, `project_status`.
+- **Outbound:** GitHub App installation API, Cloudflare account API (Workers scripts and account token minting), Linear API (later steps). See [ADR 0004](../decisions/0004-project-factory-architecture.md).
 
 ## Environments
 

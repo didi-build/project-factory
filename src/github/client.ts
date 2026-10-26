@@ -8,11 +8,14 @@ export const WRITE_INSTALLATION_TOKEN_PERMISSIONS = {
   metadata: "read",
 } as const;
 
+export type InstallationTokenPermissions = Record<string, string>;
+
 export type GitHubClientOptions = {
   appId: string;
   installationId: string;
   privateKeyPem: string;
   fetchImpl?: typeof fetch;
+  installationTokenPermissions?: InstallationTokenPermissions;
 };
 
 export type GitHubError = {
@@ -27,9 +30,12 @@ const MAX_RETRY_AFTER_MS = 10_000;
 export class GitHubClient {
   private installationToken: string | null = null;
   private readonly fetchImpl: typeof fetch;
+  private readonly installationTokenPermissions: InstallationTokenPermissions;
 
   constructor(private readonly options: GitHubClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.installationTokenPermissions =
+      options.installationTokenPermissions ?? WRITE_INSTALLATION_TOKEN_PERMISSIONS;
   }
 
   async request(
@@ -149,7 +155,7 @@ export class GitHubClient {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          permissions: WRITE_INSTALLATION_TOKEN_PERMISSIONS,
+          permissions: this.installationTokenPermissions,
         }),
       },
     );

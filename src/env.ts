@@ -9,4 +9,6 @@ export type ProjectFactoryEnv = {
   PROJECT_FACTORY_CLOUDFLARE_API_TOKEN?: string;
   PROJECT_FACTORY_BEARER_TOKEN?: string;
   PROJECT_FACTORY_BEARER_TOKEN_NEXT?: string;
+  /** GitHub login for required reviewer on new repos' production environment (ADR 0004). */
+  PROJECT_FACTORY_GH_PRODUCTION_REVIEWER?: string;
 };

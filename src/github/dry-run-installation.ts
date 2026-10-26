@@ -13,6 +13,7 @@ export async function mintDryRunInstallationToken(options: {
   installationId: string;
   privateKeyPem: string;
   fetchImpl?: typeof fetch;
+  permissions?: Record<string, string>;
 }): Promise<DryRunMintResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   let jwt: string;
@@ -32,7 +33,7 @@ export async function mintDryRunInstallationToken(options: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        permissions: DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
+        permissions: options.permissions ?? DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
       }),
     },
   );
