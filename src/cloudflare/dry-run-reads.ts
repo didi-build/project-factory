@@ -24,11 +24,21 @@ async function cfGet<T>(
       "Content-Type": "application/json",
     },
   });
-  const body = (await response.json()) as {
+  const text = await response.text();
+  let body: {
     success?: boolean;
     errors?: { message: string }[];
     result?: T;
   };
+  try {
+    body = text ? (JSON.parse(text) as typeof body) : {};
+  } catch {
+    return {
+      ok: false,
+      status: response.status,
+      message: "response was not valid JSON",
+    };
+  }
   if (!response.ok || !body.success) {
     const message = body.errors?.[0]?.message ?? response.statusText;
     return { ok: false, status: response.status, message };
@@ -64,17 +74,17 @@ export async function cloudflareDryRunReads(
   const accountId = accounts.data[0].id;
   out.account_id = accountId;
 
-  const script = await cfGet<unknown>(
+  const settings = await cfGet<unknown>(
     token,
-    `/accounts/${accountId}/workers/scripts/${workerName}`,
+    `/accounts/${accountId}/workers/scripts/${workerName}/settings`,
     fetchImpl,
   );
-  if (script.ok) {
+  if (settings.ok) {
     out.worker_exists = true;
-  } else if (script.status === 404) {
+  } else if (settings.status === 404) {
     out.worker_exists = false;
   } else {
-    out.error = `GET worker script failed: ${script.message}`;
+    out.error = `GET worker settings failed: ${settings.message}`;
     return out;
   }
 

@@ -12,7 +12,12 @@ import {
   fakePkcs8Pem,
   type RecordedGithubCall,
 } from "./github-mock.js";
-import { githubBranchProtectionApiBody } from "./github-fixtures.js";
+import {
+  githubBranchNotProtectedBody,
+  githubBranchProtectionApiBody,
+} from "./github-fixtures.js";
+
+const GITHUB_BRANCH_NOT_PROTECTED = githubBranchNotProtectedBody();
 
 const env: ProjectFactoryEnv = {
   PROJECT_FACTORY_GH_APP_ID: "5471521",
@@ -99,7 +104,7 @@ describe("createProjectRepo", () => {
       ) {
         return { status: 200, body: { success: true, result: [] } };
       }
-      if (req.url.includes("/workers/scripts/demo-app")) {
+      if (req.url.includes("/workers/scripts/demo-app/settings")) {
         return {
           status: 404,
           body: { success: false, errors: [{ message: "not found" }] },
@@ -196,6 +201,7 @@ describe("createProjectRepo", () => {
     );
 
     expect(result).toMatchObject({
+      status: "conflict",
       github: {
         repo_exists: true,
         factory_owned: false,
@@ -252,7 +258,6 @@ describe("createProjectRepo", () => {
     expect(apiCalls.map((c) => `${c.method} ${c.path}`)).toEqual([
       "GET /repos/didi-build/demo-app",
       "GET /repos/didi-build/demo-app/topics",
-      "GET /repos/didi-build/demo-app/topics",
       "GET /repos/didi-build/demo-app/branches/main/protection",
       `POST /repos/didi-build/demo-app/labels`,
       `POST /repos/didi-build/demo-app/labels`,
@@ -276,10 +281,13 @@ describe("createProjectRepo", () => {
       if (method === "PUT" && path.endsWith("/topics")) {
         return { status: 204 };
       }
+      if (method === "GET" && path === "/repos/didi-build/fresh-app/branches/main") {
+        return { status: 200, body: { name: "main" } };
+      }
       if (method === "GET" && path.includes("/protection")) {
         protectionReads += 1;
         if (protectionReads === 1) {
-          return { status: 200, body: { allow_force_pushes: { enabled: true } } };
+          return { status: 404, body: GITHUB_BRANCH_NOT_PROTECTED };
         }
         return { status: 200, body: githubBranchProtectionApiBody() };
       }
@@ -373,7 +381,68 @@ describe("createProjectRepo", () => {
     expect(auditLine).toContain('"status":"missing_secret"');
   });
 
-  it("returns pending_bootstrap when protection is 404 right after generate", async () => {
+  it("applies protection when GitHub returns Branch not protected on GET", async () => {
+    const calls: RecordedGithubCall[] = [];
+    let protectionReads = 0;
+    const github = await createMockGitHub((method, path) => {
+      if (method === "GET" && path === "/repos/didi-build/unprot-app") {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      if (method === "POST" && path.includes("/generate")) {
+        return { status: 201, body: { full_name: "didi-build/unprot-app" } };
+      }
+      if (method === "PUT" && path.endsWith("/topics")) {
+        return { status: 204 };
+      }
+      if (method === "GET" && path === "/repos/didi-build/unprot-app/branches/main") {
+        return { status: 200, body: { name: "main" } };
+      }
+      if (method === "GET" && path.includes("/protection")) {
+        protectionReads += 1;
+        if (protectionReads === 1) {
+          return { status: 404, body: GITHUB_BRANCH_NOT_PROTECTED };
+        }
+        return { status: 200, body: githubBranchProtectionApiBody() };
+      }
+      if (method === "PUT" && path.includes("/protection")) {
+        return { status: 200, body: githubBranchProtectionApiBody() };
+      }
+      if (method === "POST" && path.endsWith("/labels")) {
+        return { status: 201, body: {} };
+      }
+      if (method === "GET" && path.endsWith("/README.md")) {
+        return { status: 200, body: { content: btoa("# ok") } };
+      }
+      if (method === "GET" && path.endsWith("/wrangler.jsonc")) {
+        return {
+          status: 200,
+          body: { content: btoa('{"name":"unprot-app"}') },
+        };
+      }
+      return { status: 404 };
+    }, calls);
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-unprot",
+        caller: "test",
+        github,
+      },
+      {
+        name: "unprot-app",
+        description: "Unprotected branch",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-3",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({ status: "created" });
+    expect(
+      calls.some((c) => c.method === "PUT" && c.path.includes("/protection")),
+    ).toBe(true);
+  });
+
+  it("returns pending_bootstrap when default branch is missing after generate", async () => {
+    const calls: RecordedGithubCall[] = [];
     const github = await createMockGitHub((method, path) => {
       if (method === "GET" && path === "/repos/didi-build/async-app") {
         return { status: 404, body: { message: "Not Found" } };
@@ -384,15 +453,15 @@ describe("createProjectRepo", () => {
       if (method === "PUT" && path.endsWith("/topics")) {
         return { status: 204 };
       }
-      if (method === "GET" && path.includes("/protection")) {
+      if (method === "GET" && path === "/repos/didi-build/async-app/branches/main") {
         return { status: 404, body: { message: "Branch not found" } };
       }
       return { status: 404 };
-    });
+    }, calls);
     const result = await createProjectRepo(
       {
         env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
-        requestId: "req-pending",
+        requestId: "req-pending-branch",
         caller: "test",
         github,
       },
@@ -407,13 +476,147 @@ describe("createProjectRepo", () => {
       status: "pending_bootstrap",
       repo_url: "https://github.com/didi-build/async-app",
     });
+    expect(
+      calls.some((c) => c.method === "PUT" && c.path.includes("/protection")),
+    ).toBe(false);
+  });
+
+  it("returns pending_bootstrap when protection PUT is 404 after generate", async () => {
+    const calls: RecordedGithubCall[] = [];
+    const github = await createMockGitHub((method, path) => {
+      if (method === "GET" && path === "/repos/didi-build/put404-app") {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      if (method === "POST" && path.includes("/generate")) {
+        return { status: 201, body: { full_name: "didi-build/put404-app" } };
+      }
+      if (method === "PUT" && path.endsWith("/topics")) {
+        return { status: 204 };
+      }
+      if (method === "GET" && path === "/repos/didi-build/put404-app/branches/main") {
+        return { status: 200, body: { name: "main" } };
+      }
+      if (method === "GET" && path.includes("/protection")) {
+        return { status: 404, body: GITHUB_BRANCH_NOT_PROTECTED };
+      }
+      if (method === "PUT" && path.includes("/protection")) {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      return { status: 404 };
+    }, calls);
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-put404",
+        caller: "test",
+        github,
+      },
+      {
+        name: "put404-app",
+        description: "Protection PUT 404",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-4",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({ status: "pending_bootstrap" });
+    expect(
+      calls.filter((c) => c.method === "POST" && c.path.endsWith("/labels")),
+    ).toHaveLength(0);
+  });
+
+  it("returns pending_bootstrap when first label POST is 404 after generate", async () => {
+    const calls: RecordedGithubCall[] = [];
+    const github = await createMockGitHub((method, path) => {
+      if (method === "GET" && path === "/repos/didi-build/label404-app") {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      if (method === "POST" && path.includes("/generate")) {
+        return { status: 201, body: { full_name: "didi-build/label404-app" } };
+      }
+      if (method === "PUT" && path.endsWith("/topics")) {
+        return { status: 204 };
+      }
+      if (method === "GET" && path === "/repos/didi-build/label404-app/branches/main") {
+        return { status: 200, body: { name: "main" } };
+      }
+      if (method === "GET" && path.includes("/protection")) {
+        return { status: 404, body: GITHUB_BRANCH_NOT_PROTECTED };
+      }
+      if (method === "PUT" && path.includes("/protection")) {
+        return { status: 200, body: githubBranchProtectionApiBody() };
+      }
+      if (method === "POST" && path.endsWith("/labels")) {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      return { status: 404 };
+    }, calls);
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-label404",
+        caller: "test",
+        github,
+      },
+      {
+        name: "label404-app",
+        description: "Label POST 404",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-5",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({ status: "pending_bootstrap" });
+    expect(
+      calls.filter((c) => c.method === "POST" && c.path.endsWith("/labels")),
+    ).toHaveLength(1);
+  });
+
+  it("returns conflict_not_factory_owned on generate 422 with foreign topics and no writes", async () => {
+    const calls: RecordedGithubCall[] = [];
+    const github = await createMockGitHub((method, path) => {
+      if (method === "GET" && path === "/repos/didi-build/taken-app") {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      if (method === "POST" && path.includes("/generate")) {
+        return { status: 422, body: { message: "name already exists" } };
+      }
+      if (method === "GET" && path === "/repos/didi-build/taken-app/topics") {
+        return { status: 200, body: { names: ["someone-elses"] } };
+      }
+      return { status: 404 };
+    }, calls);
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-422",
+        caller: "test",
+        github,
+      },
+      {
+        name: "taken-app",
+        description: "Taken name",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-6",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({
+      error: { code: "conflict_not_factory_owned", step: "create_repo" },
+    });
+    expect(calls.filter((c) => c.method === "PUT")).toEqual([]);
+    expect(
+      calls.filter((c) => c.method === "POST" && c.path.endsWith("/labels")),
+    ).toEqual([]);
   });
 
   it("rejects invalid and reserved names with no GitHub API calls", async () => {
     const fetchImpl = async () => {
       throw new Error("GitHub fetch must not run for invalid names");
     };
-    for (const name of ["ab", "launchpad", "pr-foo"]) {
+    const cases: [string, string][] = [
+      ["ab", "invalid_name"],
+      ["launchpad", "reserved_name"],
+      ["pr-foo", "invalid_name"],
+    ];
+    for (const [name, code] of cases) {
       const result = await createProjectRepo(
         {
           env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
@@ -428,7 +631,7 @@ describe("createProjectRepo", () => {
           dry_run: false,
         },
       );
-      expect(result).toHaveProperty("error");
+      expect(result).toMatchObject({ error: { code } });
     }
   });
 

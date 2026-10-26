@@ -68,6 +68,72 @@ describe("GitHubClient installation token mint", () => {
     }
   });
 
+  it("maps token mint 404 to permission_denied without throwing", async () => {
+    const pem = await fakePkcs8Pem();
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: pem,
+      fetchImpl: async (url) => {
+        if (String(url).includes("access_tokens")) {
+          return new Response(JSON.stringify({ message: "Not Found" }), {
+            status: 404,
+          });
+        }
+        return new Response("{}", { status: 200 });
+      },
+    });
+    const result = await client.request("GET", "/repos/o/r");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("permission_denied");
+    }
+  });
+
+  it("maps token mint 5xx to retryable upstream_error without throwing", async () => {
+    const pem = await fakePkcs8Pem();
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: pem,
+      fetchImpl: async (url) => {
+        if (String(url).includes("access_tokens")) {
+          return new Response(JSON.stringify({ message: "error" }), { status: 500 });
+        }
+        return new Response("{}", { status: 200 });
+      },
+    });
+    const result = await client.request("GET", "/repos/o/r");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("upstream_error");
+      expect(result.error.retryable).toBe(true);
+    }
+  });
+
+  it("maps token mint 422 to non-retryable upstream_error without throwing", async () => {
+    const pem = await fakePkcs8Pem();
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: pem,
+      fetchImpl: async (url) => {
+        if (String(url).includes("access_tokens")) {
+          return new Response(JSON.stringify({ message: "Validation Failed" }), {
+            status: 422,
+          });
+        }
+        return new Response("{}", { status: 200 });
+      },
+    });
+    const result = await client.request("GET", "/repos/o/r");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("upstream_error");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
   it("maps token mint 403 to permission_denied without throwing", async () => {
     const pem = await fakePkcs8Pem();
     const client = new GitHubClient({

@@ -311,7 +311,7 @@ export async function createProjectRepo(
         const topic = await github.request("PUT", `/repos/${repoFull}/topics`, {
           names: [FACTORY_TOPIC],
         });
-        if (!topic.ok && topic.error.status !== 422) {
+        if (!topic.ok) {
           auditStatus = "upstream_error";
           failedStep = "set_topic";
           return factoryError(
@@ -326,23 +326,20 @@ export async function createProjectRepo(
       }
     }
 
-    if (repoExists && factoryOwned && !createdThisRun) {
-      const topics = await readFactoryTopics(github, repoFull);
-      if (!topics.ok) {
-        auditStatus = topics.error.error.code;
-        failedStep = topics.error.error.step;
-        return topics.error;
+    if (createdThisRun) {
+      const branch = await github.request(
+        "GET",
+        `/repos/${repoFull}/branches/${DEFAULT_BRANCH}`,
+      );
+      if (!branch.ok && branch.error.status === 404) {
+        auditStatus = "pending_bootstrap";
+        return pendingBootstrapSuccess(ctx, steps, warnings, repoUrl, false);
       }
-      if (!topics.names.includes(FACTORY_TOPIC)) {
-        const topic = await github.request("PUT", `/repos/${repoFull}/topics`, {
-          names: [...topics.names, FACTORY_TOPIC],
-        });
-        if (!topic.ok) {
-          auditStatus = "upstream_error";
-          failedStep = "set_topic";
-          return mapGithubFailure(topic.error, "set_topic");
-        }
-        steps.push({ id: "set_topic", status: "done", detail: FACTORY_TOPIC });
+      if (!branch.ok) {
+        const mapped = mapGithubFailure(branch.error, "read_branch");
+        auditStatus = mapped.error.code;
+        failedStep = mapped.error.step;
+        return mapped;
       }
     }
 
@@ -351,10 +348,6 @@ export async function createProjectRepo(
       "GET",
       `/repos/${repoFull}/branches/${DEFAULT_BRANCH}/protection`,
     );
-    if (createdThisRun && !protection.ok && protection.error.status === 404) {
-      auditStatus = "pending_bootstrap";
-      return pendingBootstrapSuccess(ctx, steps, warnings, repoUrl, false);
-    }
     if (!protection.ok && protection.error.status !== 404) {
       const mapped = mapGithubFailure(protection.error, protectionStepId);
       auditStatus = mapped.error.code;

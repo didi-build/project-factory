@@ -22,7 +22,7 @@ export type GitHubError = {
   retryable: boolean;
 };
 
-const MAX_RETRY_AFTER_MS = 60_000;
+const MAX_RETRY_AFTER_MS = 10_000;
 
 export class GitHubClient {
   private installationToken: string | null = null;
@@ -95,13 +95,15 @@ export class GitHubClient {
       } catch {
         // ignore parse errors
       }
+      const rateRemaining = response.headers.get("x-ratelimit-remaining");
+      const isSecondaryRateLimit = response.status === 403 && rateRemaining === "0";
       return {
         ok: false,
         error: {
           status: response.status,
-          code: apiCode,
+          code: isSecondaryRateLimit ? "rate_limited" : apiCode,
           message: apiMessage,
-          retryable,
+          retryable: isSecondaryRateLimit ? true : retryable,
         },
       };
     }
@@ -193,7 +195,7 @@ export class GitHubClient {
         ok: false,
         error: {
           status: response.status,
-          code: apiCode,
+          code: "upstream_error",
           message: trimmed,
           retryable: response.status >= 500,
         },

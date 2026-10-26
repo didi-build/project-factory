@@ -1,3 +1,11 @@
+export function githubBranchNotProtectedBody() {
+  return {
+    message: "Branch not protected",
+    documentation_url:
+      "https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+  };
+}
+
 export function githubBranchProtectionApiBody() {
   return {
     required_status_checks: { strict: false, checks: [{ context: "check" }] },

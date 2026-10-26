@@ -14,11 +14,14 @@ export function mapGithubFailure(
     return {
       error: {
         code: "missing_secret",
-        message: "PROJECT_FACTORY_GH_PRIVATE_KEY",
+        message: "PROJECT_FACTORY_GH_APP_ID or PROJECT_FACTORY_GH_PRIVATE_KEY",
         step,
         retryable: false,
       },
     };
+  }
+  if (error.code === "rate_limited") {
+    return { error: { code: "rate_limited", message, step, retryable: true } };
   }
   if (error.code === "permission_denied" || error.status === 403) {
     return { error: { code: "permission_denied", message, step, retryable: false } };

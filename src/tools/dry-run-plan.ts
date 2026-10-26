@@ -30,7 +30,7 @@ export type GithubDryRunDiscovery = {
 };
 
 export type DryRunPlan = {
-  status: "planned";
+  status: "planned" | "conflict";
   dry_run: true;
   steps: FactoryStep[];
   warnings: string[];
@@ -193,20 +193,29 @@ export async function buildCreateProjectRepoDryRunPlan(
           `/repos/${repoFull}/topics`,
           fetchImpl,
         );
-        let topicNames: string[] = [];
-        if (topics.ok && topics.data && typeof topics.data === "object") {
-          topicNames = (topics.data as { names?: string[] }).names ?? [];
-        } else if (!topics.ok) {
+        if (!topics.ok) {
           warnings.push(`GET topics failed: ${topics.message}`);
+          github.factory_owned = null;
+          github.conflict_not_factory_owned = false;
+          steps.push({
+            id: "read_topics",
+            status: "failed",
+            detail: topics.message,
+          });
+        } else {
+          const topicNames =
+            topics.data && typeof topics.data === "object"
+              ? ((topics.data as { names?: string[] }).names ?? [])
+              : [];
+          github.factory_owned = topicNames.includes(FACTORY_TOPIC);
+          github.conflict_not_factory_owned =
+            github.repo_exists === true && github.factory_owned === false;
+          steps.push({
+            id: "read_topics",
+            status: "done",
+            detail: github.factory_owned ? FACTORY_TOPIC : "no factory marker",
+          });
         }
-        github.factory_owned = topicNames.includes(FACTORY_TOPIC);
-        github.conflict_not_factory_owned =
-          github.repo_exists === true && !github.factory_owned;
-        steps.push({
-          id: "read_topics",
-          status: topics.ok ? "done" : "failed",
-          detail: github.factory_owned ? FACTORY_TOPIC : "no factory marker",
-        });
 
         const protection = await installationGet(
           token,
@@ -256,8 +265,15 @@ export async function buildCreateProjectRepoDryRunPlan(
     });
   }
 
+  const planStatus = github.conflict_not_factory_owned ? "conflict" : "planned";
+  if (github.conflict_not_factory_owned) {
+    warnings.push(
+      "Repository exists without the project-factory topic; dry run will not create or modify it",
+    );
+  }
+
   return {
-    status: "planned",
+    status: planStatus,
     dry_run: true,
     steps,
     warnings,
