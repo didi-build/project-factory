@@ -64,4 +64,3 @@ This file is the single source of truth for how agents work in this repository. 
 | `npm run repo-settings`      | Dry-run, `--apply`, or `--verify` recommended GitHub repo settings                                                                                                     |
 | `npm run verify-action-pins` | Verify each pinned action SHA matches its version comment (`# vX.Y.Z`)                                                                                                 |
 | `npm run wrangler`           | Wrangler CLI (local dev; production deploy uses GitHub Actions)                                                                                                        |
-| `npm run deploy`             | Deploy Worker `project-factory` locally (production merges use the GitHub `production` environment)                                                                    |

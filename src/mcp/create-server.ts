@@ -48,7 +48,7 @@ export function createFactoryMcpServer(
     "project_status",
     {
       description:
-        "Read-only status for GitHub, Linear and Cloudflare resources for a project name",
+        "Read-only GitHub status for a project name (Linear and Cloudflare not implemented yet)",
       inputSchema: {
         name: z.string(),
       },

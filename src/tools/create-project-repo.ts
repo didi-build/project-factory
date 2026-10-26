@@ -5,14 +5,20 @@ import {
   targetBranchProtectionPayload,
 } from "../factory/branch-protection.js";
 import {
+  BOOTSTRAP_MAX_API_CALLS,
   BOOTSTRAP_POLL_MS,
   BOOTSTRAP_WAIT_MS,
   DEFAULT_BRANCH,
   FACTORY_TOPIC,
 } from "../factory/constants.js";
+import {
+  decodeGithubFileContent,
+  readmeHasLaunchpadPlaceholders,
+} from "../factory/github-content.js";
 import { STANDARD_FACTORY_LABELS, standardLabelNames } from "../factory/labels.js";
 import { validateProjectName } from "../factory/naming.js";
 import { GitHubClient } from "../github/client.js";
+import { mapGithubFailure } from "../github/github-errors.js";
 import { buildCreateProjectRepoDryRunPlan } from "./dry-run-plan.js";
 import type { FactoryError, FactoryStep, FactorySuccess } from "./types.js";
 
@@ -53,281 +59,48 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function createProjectRepo(
-  ctx: CreateProjectRepoContext,
-  input: CreateProjectRepoInput,
-): Promise<FactorySuccess | FactoryError> {
-  const started = Date.now();
-  const dryRun = input.dry_run !== false;
-  const steps: FactoryStep[] = [];
-  const warnings: string[] = [];
+async function readFactoryTopics(
+  github: GitHubClient,
+  repoFull: string,
+): Promise<
+  | { ok: true; names: string[]; factoryOwned: boolean }
+  | { ok: false; error: FactoryError }
+> {
+  const topicsResult = await github.request("GET", `/repos/${repoFull}/topics`);
+  if (!topicsResult.ok) {
+    if (topicsResult.error.status === 404) {
+      return { ok: true, names: [], factoryOwned: false };
+    }
+    return { ok: false, error: mapGithubFailure(topicsResult.error, "read_topics") };
+  }
+  const names =
+    topicsResult.data && typeof topicsResult.data === "object"
+      ? ((topicsResult.data as { names?: string[] }).names ?? [])
+      : [];
+  return { ok: true, names, factoryOwned: names.includes(FACTORY_TOPIC) };
+}
 
-  const nameCheck = validateProjectName(input.name);
-  if (!nameCheck.ok) {
-    return factoryError(nameCheck.code, nameCheck.message);
-  }
-  if (
-    !input.description ||
-    input.description.length < 1 ||
-    input.description.length > 350
-  ) {
-    return factoryError(
-      "invalid_name",
-      "description is required and must be 1 to 350 characters",
-    );
-  }
-  if (!input.approval_ref?.trim()) {
-    return factoryError("invalid_name", "approval_ref is required");
-  }
-
-  const org = ctx.env.PROJECT_FACTORY_GH_ORG;
-  const repoFull = `${org}/${input.name}`;
-  const repoUrl = `https://github.com/${repoFull}`;
-  const isPrivate = input.private === true;
-
-  if (!ctx.env.PROJECT_FACTORY_GH_PRIVATE_KEY && !dryRun) {
-    return factoryError("missing_secret", "PROJECT_FACTORY_GH_PRIVATE_KEY");
-  }
-  if (
-    !ctx.env.PROJECT_FACTORY_GH_APP_ID ||
-    !ctx.env.PROJECT_FACTORY_GH_INSTALLATION_ID
-  ) {
+function missingGithubConfigError(env: ProjectFactoryEnv): FactoryError | null {
+  if (!env.PROJECT_FACTORY_GH_APP_ID) {
     return factoryError("missing_secret", "PROJECT_FACTORY_GH_APP_ID");
   }
-
-  if (dryRun) {
-    const plan = await buildCreateProjectRepoDryRunPlan(
-      ctx.env,
-      {
-        name: input.name,
-        org,
-        templateRepo: ctx.env.PROJECT_FACTORY_TEMPLATE_REPO,
-        isPrivate,
-      },
-      { fetchImpl: ctx.fetchImpl },
-    );
-    const plannedResult = {
-      request_id: ctx.requestId,
-      ...plan,
-    };
-    writeAuditEntry({
-      request_id: ctx.requestId,
-      caller: ctx.caller,
-      tool: "create_project_repo",
-      dry_run: true,
-      input: {
-        name: input.name,
-        description: input.description,
-        private: isPrivate,
-        approval_ref: input.approval_ref,
-      },
-      approval_ref: input.approval_ref,
-      status: plan.status,
-      resources: { repo_url: repoUrl },
-      duration_ms: Date.now() - started,
-      github_installation_token_minted: plan.github.github_installation_token_minted,
-      github_installation_token_permissions: plan.github
-        .github_installation_token_minted
-        ? { ...plan.github.github_installation_token_permissions }
-        : undefined,
-    });
-    return plannedResult;
+  if (!env.PROJECT_FACTORY_GH_INSTALLATION_ID) {
+    return factoryError("missing_secret", "PROJECT_FACTORY_GH_INSTALLATION_ID");
   }
+  return null;
+}
 
-  const github =
-    ctx.github ??
-    new GitHubClient({
-      appId: ctx.env.PROJECT_FACTORY_GH_APP_ID,
-      installationId: ctx.env.PROJECT_FACTORY_GH_INSTALLATION_ID,
-      privateKeyPem: ctx.env.PROJECT_FACTORY_GH_PRIVATE_KEY ?? "",
-    });
-
-  const existing = await github.request("GET", `/repos/${repoFull}`);
-  let repoExists = existing.ok;
-  let factoryOwned = false;
-  if (repoExists) {
-    const topicsResult = await github.request("GET", `/repos/${repoFull}/topics`);
-    const names =
-      topicsResult.ok && topicsResult.data && typeof topicsResult.data === "object"
-        ? ((topicsResult.data as { names?: string[] }).names ?? [])
-        : [];
-    factoryOwned = names.includes(FACTORY_TOPIC);
-    if (!factoryOwned) {
-      return factoryError(
-        "conflict_not_factory_owned",
-        `repository ${repoFull} exists without the project-factory topic`,
-      );
-    }
-    steps.push({ id: "repo_exists", status: "skipped", detail: repoUrl });
-  }
-
-  const template = parseTemplateRepo(ctx.env.PROJECT_FACTORY_TEMPLATE_REPO);
-
-  if (!repoExists) {
-    const create = await github.request(
-      "POST",
-      `/repos/${template.owner}/${template.repo}/generate`,
-      {
-        owner: org,
-        name: input.name,
-        description: input.description,
-        private: isPrivate,
-        include_all_branches: false,
-      },
-    );
-    if (!create.ok) {
-      if (create.error.status === 422) {
-        repoExists = true;
-        steps.push({ id: "create_repo", status: "skipped", detail: "already exists" });
-      } else if (create.error.status === 403) {
-        return factoryError("permission_denied", create.error.message, "create_repo");
-      } else {
-        return factoryError(
-          create.error.status === 429 ? "rate_limited" : "upstream_error",
-          create.error.message,
-          "create_repo",
-          create.error.retryable,
-        );
-      }
-    } else {
-      steps.push({ id: "create_repo", status: "done", detail: repoUrl });
-      repoExists = true;
-      const topic = await github.request("PUT", `/repos/${repoFull}/topics`, {
-        names: [FACTORY_TOPIC],
-      });
-      if (!topic.ok && topic.error.status !== 422) {
-        return factoryError(
-          "upstream_error",
-          topic.error.message,
-          "set_topic",
-          topic.error.retryable,
-        );
-      }
-      steps.push({ id: "set_topic", status: "done", detail: FACTORY_TOPIC });
-    }
-  }
-
-  if (repoExists) {
-    const topicsResult = await github.request("GET", `/repos/${repoFull}/topics`);
-    const names =
-      topicsResult.ok && topicsResult.data && typeof topicsResult.data === "object"
-        ? ((topicsResult.data as { names?: string[] }).names ?? [])
-        : [];
-    if (!names.includes(FACTORY_TOPIC)) {
-      const topic = await github.request("PUT", `/repos/${repoFull}/topics`, {
-        names: [...names, FACTORY_TOPIC],
-      });
-      if (!topic.ok) {
-        return factoryError(
-          "upstream_error",
-          topic.error.message,
-          "set_topic",
-          topic.error.retryable,
-        );
-      }
-      steps.push({ id: "set_topic", status: "done", detail: FACTORY_TOPIC });
-    }
-  }
-
-  const protectionStepId = "branch_protection";
-  const protection = await github.request(
-    "GET",
-    `/repos/${repoFull}/branches/${DEFAULT_BRANCH}/protection`,
-  );
-  const needsProtection =
-    !protection.ok ||
-    !protectionLooksCorrect(protection.data as Record<string, unknown>);
-  if (needsProtection) {
-    const apply = await github.request(
-      "PUT",
-      `/repos/${repoFull}/branches/${DEFAULT_BRANCH}/protection`,
-      targetBranchProtectionPayload(),
-    );
-    if (!apply.ok) {
-      return factoryError(
-        "upstream_error",
-        apply.error.message,
-        protectionStepId,
-        apply.error.retryable,
-      );
-    }
-    steps.push({ id: protectionStepId, status: "done" });
-  } else {
-    steps.push({ id: protectionStepId, status: "skipped" });
-  }
-
-  for (const label of STANDARD_FACTORY_LABELS) {
-    const stepId = `label_${label.name}`;
-    const created = await github.request("POST", `/repos/${repoFull}/labels`, label);
-    if (created.ok || created.error.status === 422) {
-      steps.push({
-        id: stepId,
-        status: created.ok ? "done" : "skipped",
-        detail: label.name,
-      });
-    } else {
-      return factoryError(
-        "upstream_error",
-        created.error.message,
-        stepId,
-        created.error.retryable,
-      );
-    }
-  }
-
-  let protectionOk = false;
-  let bootstrapPending = false;
-  const deadline = Date.now() + BOOTSTRAP_WAIT_MS;
-  while (Date.now() < deadline) {
-    const readme = await github.request("GET", `/repos/${repoFull}/contents/README.md`);
-    const wrangler = await github.request(
-      "GET",
-      `/repos/${repoFull}/contents/wrangler.jsonc`,
-    );
-    const prot = await github.request(
-      "GET",
-      `/repos/${repoFull}/branches/${DEFAULT_BRANCH}/protection`,
-    );
-    const readmeOk =
-      readme.ok &&
-      readme.data &&
-      typeof readme.data === "object" &&
-      !JSON.stringify(readme.data).includes("{{");
-    let wranglerOk = false;
-    if (wrangler.ok && wrangler.data && typeof wrangler.data === "object") {
-      const content = (wrangler.data as { content?: string }).content;
-      if (content) {
-        const decoded = atob(content.replace(/\n/g, ""));
-        wranglerOk =
-          decoded.includes(`"name": "${input.name}"`) ||
-          decoded.includes(`"name":"${input.name}"`);
-      }
-    }
-    protectionOk =
-      prot.ok && protectionLooksCorrect(prot.data as Record<string, unknown>);
-    if (readmeOk && wranglerOk && protectionOk) {
-      bootstrapPending = false;
-      break;
-    }
-    bootstrapPending = true;
-    await sleep(BOOTSTRAP_POLL_MS);
-  }
-
-  let status: string;
-  if (bootstrapPending) {
-    status = "pending_bootstrap";
-    warnings.push("Bootstrap may still be running; call again later");
-  } else if (steps.some((s) => s.status === "done" && s.id !== "repo_exists")) {
-    status = factoryOwned ? "repaired" : "created";
-  } else if (factoryOwned || repoExists) {
-    status = "exists";
-  } else {
-    status = "created";
-  }
-
-  const result: FactorySuccess = {
+function pendingBootstrapSuccess(
+  ctx: CreateProjectRepoContext,
+  steps: FactoryStep[],
+  warnings: string[],
+  repoUrl: string,
+  protectionOk: boolean,
+): FactorySuccess {
+  warnings.push("Bootstrap may still be running; call again later");
+  return {
     request_id: ctx.requestId,
-    status,
+    status: "pending_bootstrap",
     steps,
     warnings,
     repo_url: repoUrl,
@@ -342,23 +115,366 @@ export async function createProjectRepo(
     protection_ok: boolean;
     dry_run: boolean;
   };
+}
 
-  writeAuditEntry({
-    request_id: ctx.requestId,
-    caller: ctx.caller,
-    tool: "create_project_repo",
-    dry_run: false,
-    input: {
-      name: input.name,
-      description: input.description,
-      private: isPrivate,
+export async function createProjectRepo(
+  ctx: CreateProjectRepoContext,
+  input: CreateProjectRepoInput,
+): Promise<FactorySuccess | FactoryError> {
+  const started = Date.now();
+  const dryRun = input.dry_run !== false;
+  const description = input.description.trim();
+  const steps: FactoryStep[] = [];
+  const warnings: string[] = [];
+  let auditStatus = "started";
+  let failedStep: string | undefined;
+  let auditExtras: {
+    steps?: FactoryStep[];
+    github_installation_token_minted?: boolean;
+    github_installation_token_permissions?: Record<string, string>;
+  } = {};
+  const org = ctx.env.PROJECT_FACTORY_GH_ORG;
+  const repoFull = `${org}/${input.name}`;
+  const repoUrl = `https://github.com/${repoFull}`;
+  const isPrivate = input.private === true;
+
+  const finishAudit = () => {
+    writeAuditEntry({
+      request_id: ctx.requestId,
+      caller: ctx.caller,
+      tool: "create_project_repo",
+      dry_run: dryRun,
+      input: {
+        name: input.name,
+        description,
+        private: isPrivate,
+        approval_ref: input.approval_ref,
+      },
       approval_ref: input.approval_ref,
-    },
-    approval_ref: input.approval_ref,
-    status,
-    resources: { repo_url: repoUrl },
-    duration_ms: Date.now() - started,
-  });
+      status: auditStatus,
+      resources: { repo_url: repoUrl },
+      duration_ms: Date.now() - started,
+      steps: auditExtras.steps ?? (steps.length > 0 ? [...steps] : undefined),
+      failed_step: failedStep,
+      github_installation_token_minted: auditExtras.github_installation_token_minted,
+      github_installation_token_permissions:
+        auditExtras.github_installation_token_permissions,
+    });
+  };
 
-  return result;
+  try {
+    const nameCheck = validateProjectName(input.name);
+    if (!nameCheck.ok) {
+      auditStatus = nameCheck.code;
+      return factoryError(nameCheck.code, nameCheck.message);
+    }
+    if (!description || description.length < 1 || description.length > 350) {
+      auditStatus = "invalid_input";
+      return factoryError(
+        "invalid_input",
+        "description is required and must be 1 to 350 characters",
+      );
+    }
+    if (!input.approval_ref?.trim()) {
+      auditStatus = "invalid_input";
+      return factoryError("invalid_input", "approval_ref is required");
+    }
+
+    const configError = missingGithubConfigError(ctx.env);
+    if (configError) {
+      auditStatus = "missing_secret";
+      return configError;
+    }
+
+    if (dryRun) {
+      const plan = await buildCreateProjectRepoDryRunPlan(
+        ctx.env,
+        {
+          name: input.name,
+          org,
+          templateRepo: ctx.env.PROJECT_FACTORY_TEMPLATE_REPO,
+          isPrivate,
+        },
+        { fetchImpl: ctx.fetchImpl },
+      );
+      auditStatus = plan.status;
+      auditExtras = {
+        steps: plan.steps,
+        github_installation_token_minted: plan.github.github_installation_token_minted,
+        github_installation_token_permissions: plan.github
+          .github_installation_token_minted
+          ? { ...plan.github.github_installation_token_permissions }
+          : undefined,
+      };
+      return { request_id: ctx.requestId, ...plan };
+    }
+
+    if (!ctx.env.PROJECT_FACTORY_GH_PRIVATE_KEY) {
+      auditStatus = "missing_secret";
+      return factoryError("missing_secret", "PROJECT_FACTORY_GH_PRIVATE_KEY");
+    }
+
+    const github =
+      ctx.github ??
+      new GitHubClient({
+        appId: ctx.env.PROJECT_FACTORY_GH_APP_ID,
+        installationId: ctx.env.PROJECT_FACTORY_GH_INSTALLATION_ID,
+        privateKeyPem: ctx.env.PROJECT_FACTORY_GH_PRIVATE_KEY,
+        fetchImpl: ctx.fetchImpl,
+      });
+
+    let repoExists = false;
+    let factoryOwned = false;
+    let createdThisRun = false;
+
+    const existing = await github.request("GET", `/repos/${repoFull}`);
+    if (existing.ok) {
+      repoExists = true;
+      const topics = await readFactoryTopics(github, repoFull);
+      if (!topics.ok) {
+        auditStatus = topics.error.error.code;
+        failedStep = topics.error.error.step;
+        return topics.error;
+      }
+      factoryOwned = topics.factoryOwned;
+      if (!factoryOwned) {
+        auditStatus = "conflict_not_factory_owned";
+        failedStep = "read_topics";
+        return factoryError(
+          "conflict_not_factory_owned",
+          `repository ${repoFull} exists without the project-factory topic`,
+          "read_topics",
+        );
+      }
+      steps.push({ id: "repo_exists", status: "skipped", detail: repoUrl });
+    } else if (existing.error.status === 404) {
+      repoExists = false;
+    } else {
+      const mapped = mapGithubFailure(existing.error, "read_repo");
+      auditStatus = mapped.error.code;
+      failedStep = mapped.error.step;
+      return mapped;
+    }
+
+    const template = parseTemplateRepo(ctx.env.PROJECT_FACTORY_TEMPLATE_REPO);
+
+    if (!repoExists) {
+      const create = await github.request(
+        "POST",
+        `/repos/${template.owner}/${template.repo}/generate`,
+        {
+          owner: org,
+          name: input.name,
+          description,
+          private: isPrivate,
+          include_all_branches: false,
+        },
+      );
+      if (!create.ok) {
+        if (create.error.status === 422) {
+          const topics = await readFactoryTopics(github, repoFull);
+          if (!topics.ok) {
+            auditStatus = topics.error.error.code;
+            failedStep = topics.error.error.step;
+            return topics.error;
+          }
+          if (!topics.factoryOwned) {
+            auditStatus = "conflict_not_factory_owned";
+            failedStep = "create_repo";
+            return factoryError(
+              "conflict_not_factory_owned",
+              `repository ${repoFull} exists without the project-factory topic`,
+              "create_repo",
+            );
+          }
+          repoExists = true;
+          factoryOwned = true;
+          steps.push({
+            id: "create_repo",
+            status: "skipped",
+            detail: "already exists",
+          });
+        } else if (create.error.status === 403) {
+          auditStatus = "permission_denied";
+          failedStep = "create_repo";
+          return mapGithubFailure(create.error, "create_repo");
+        } else {
+          const mapped = mapGithubFailure(create.error, "create_repo");
+          auditStatus = mapped.error.code;
+          failedStep = mapped.error.step;
+          return mapped;
+        }
+      } else {
+        createdThisRun = true;
+        repoExists = true;
+        steps.push({ id: "create_repo", status: "done", detail: repoUrl });
+        const topic = await github.request("PUT", `/repos/${repoFull}/topics`, {
+          names: [FACTORY_TOPIC],
+        });
+        if (!topic.ok && topic.error.status !== 422) {
+          auditStatus = "upstream_error";
+          failedStep = "set_topic";
+          return factoryError(
+            "upstream_error",
+            "Generate created the repo but setting the project-factory topic failed; open a Ready for maintainer ticket",
+            "set_topic",
+            topic.error.retryable,
+          );
+        }
+        factoryOwned = true;
+        steps.push({ id: "set_topic", status: "done", detail: FACTORY_TOPIC });
+      }
+    }
+
+    if (repoExists && factoryOwned && !createdThisRun) {
+      const topics = await readFactoryTopics(github, repoFull);
+      if (!topics.ok) {
+        auditStatus = topics.error.error.code;
+        failedStep = topics.error.error.step;
+        return topics.error;
+      }
+      if (!topics.names.includes(FACTORY_TOPIC)) {
+        const topic = await github.request("PUT", `/repos/${repoFull}/topics`, {
+          names: [...topics.names, FACTORY_TOPIC],
+        });
+        if (!topic.ok) {
+          auditStatus = "upstream_error";
+          failedStep = "set_topic";
+          return mapGithubFailure(topic.error, "set_topic");
+        }
+        steps.push({ id: "set_topic", status: "done", detail: FACTORY_TOPIC });
+      }
+    }
+
+    const protectionStepId = "branch_protection";
+    const protection = await github.request(
+      "GET",
+      `/repos/${repoFull}/branches/${DEFAULT_BRANCH}/protection`,
+    );
+    if (createdThisRun && !protection.ok && protection.error.status === 404) {
+      auditStatus = "pending_bootstrap";
+      return pendingBootstrapSuccess(ctx, steps, warnings, repoUrl, false);
+    }
+    if (!protection.ok && protection.error.status !== 404) {
+      const mapped = mapGithubFailure(protection.error, protectionStepId);
+      auditStatus = mapped.error.code;
+      failedStep = mapped.error.step;
+      return mapped;
+    }
+    const needsProtection =
+      !protection.ok ||
+      !protectionLooksCorrect(protection.data as Record<string, unknown>);
+    if (needsProtection) {
+      const apply = await github.request(
+        "PUT",
+        `/repos/${repoFull}/branches/${DEFAULT_BRANCH}/protection`,
+        targetBranchProtectionPayload(),
+      );
+      if (!apply.ok) {
+        if (createdThisRun && apply.error.status === 404) {
+          auditStatus = "pending_bootstrap";
+          return pendingBootstrapSuccess(ctx, steps, warnings, repoUrl, false);
+        }
+        const mapped = mapGithubFailure(apply.error, protectionStepId);
+        auditStatus = mapped.error.code;
+        failedStep = mapped.error.step;
+        return mapped;
+      }
+      steps.push({ id: protectionStepId, status: "done" });
+    } else {
+      steps.push({ id: protectionStepId, status: "skipped" });
+    }
+
+    for (const label of STANDARD_FACTORY_LABELS) {
+      const stepId = `label_${label.name}`;
+      const created = await github.request("POST", `/repos/${repoFull}/labels`, label);
+      if (created.ok || created.error.status === 422) {
+        steps.push({
+          id: stepId,
+          status: created.ok ? "done" : "skipped",
+          detail: label.name,
+        });
+      } else if (createdThisRun && created.error.status === 404) {
+        auditStatus = "pending_bootstrap";
+        return pendingBootstrapSuccess(ctx, steps, warnings, repoUrl, false);
+      } else {
+        const mapped = mapGithubFailure(created.error, stepId);
+        auditStatus = mapped.error.code;
+        failedStep = mapped.error.step;
+        return mapped;
+      }
+    }
+
+    let protectionOk = false;
+    let bootstrapPending = false;
+    const deadline = Date.now() + BOOTSTRAP_WAIT_MS;
+    let apiCalls = 0;
+    while (Date.now() < deadline && apiCalls + 3 <= BOOTSTRAP_MAX_API_CALLS) {
+      apiCalls += 3;
+      const readme = await github.request(
+        "GET",
+        `/repos/${repoFull}/contents/README.md`,
+      );
+      const wrangler = await github.request(
+        "GET",
+        `/repos/${repoFull}/contents/wrangler.jsonc`,
+      );
+      const prot = await github.request(
+        "GET",
+        `/repos/${repoFull}/branches/${DEFAULT_BRANCH}/protection`,
+      );
+      const readmeOk = readme.ok && !readmeHasLaunchpadPlaceholders(readme.data);
+      let wranglerOk = false;
+      if (wrangler.ok) {
+        const decoded = decodeGithubFileContent(wrangler.data);
+        wranglerOk =
+          decoded !== null &&
+          (decoded.includes(`"name": "${input.name}"`) ||
+            decoded.includes(`"name":"${input.name}"`));
+      }
+      protectionOk =
+        prot.ok && protectionLooksCorrect(prot.data as Record<string, unknown>);
+      if (readmeOk && wranglerOk && protectionOk) {
+        bootstrapPending = false;
+        break;
+      }
+      bootstrapPending = true;
+      await sleep(BOOTSTRAP_POLL_MS);
+    }
+
+    let status: string;
+    if (bootstrapPending) {
+      status = "pending_bootstrap";
+      warnings.push("Bootstrap may still be running; call again later");
+    } else if (steps.some((s) => s.status === "done" && s.id !== "repo_exists")) {
+      status = factoryOwned && !createdThisRun ? "repaired" : "created";
+    } else if (factoryOwned || repoExists) {
+      status = "exists";
+    } else {
+      status = "created";
+    }
+
+    auditStatus = status;
+    const result: FactorySuccess = {
+      request_id: ctx.requestId,
+      status,
+      steps,
+      warnings,
+      repo_url: repoUrl,
+      default_branch: DEFAULT_BRANCH,
+      labels: standardLabelNames(),
+      protection_ok: protectionOk,
+      dry_run: false,
+    } as FactorySuccess & {
+      repo_url: string;
+      default_branch: string;
+      labels: string[];
+      protection_ok: boolean;
+      dry_run: boolean;
+    };
+
+    return result;
+  } finally {
+    finishAudit();
+  }
 }

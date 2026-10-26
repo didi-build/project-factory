@@ -1,3 +1,5 @@
+import type { FactoryStep } from "../tools/types.js";
+
 export type AuditInput = {
   request_id: string;
   caller: string;
@@ -10,6 +12,8 @@ export type AuditInput = {
   duration_ms: number;
   github_installation_token_minted?: boolean;
   github_installation_token_permissions?: Record<string, string>;
+  steps?: FactoryStep[];
+  failed_step?: string;
 };
 
 export function writeAuditEntry(entry: AuditInput): void {

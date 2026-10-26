@@ -53,7 +53,17 @@ export async function authorizeBearer(
   return tokenMatches(token, env.PROJECT_FACTORY_BEARER_TOKEN_NEXT);
 }
 
+const MAX_CALLER_LENGTH = 64;
+const CALLER_PATTERN = /^[a-zA-Z0-9._-]+$/;
+
 export function factoryCaller(request: Request): string {
-  const caller = request.headers.get("X-Factory-Caller")?.trim();
-  return caller && caller.length > 0 ? caller : "unknown";
+  const raw = request.headers.get("X-Factory-Caller")?.trim() ?? "";
+  if (!raw) {
+    return "unknown";
+  }
+  const clipped = raw.slice(0, MAX_CALLER_LENGTH);
+  if (!CALLER_PATTERN.test(clipped)) {
+    return "unknown";
+  }
+  return clipped;
 }

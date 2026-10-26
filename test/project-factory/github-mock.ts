@@ -1,4 +1,13 @@
-import { GitHubClient } from "../../src/github/client.js";
+import {
+  GitHubClient,
+  WRITE_INSTALLATION_TOKEN_PERMISSIONS,
+} from "../../src/github/client.js";
+
+export type RecordedGithubCall = {
+  method: string;
+  path: string;
+  body?: unknown;
+};
 
 type RouteHandler = (
   method: string,
@@ -6,14 +15,21 @@ type RouteHandler = (
   body?: unknown,
 ) => { status: number; body?: unknown };
 
-export async function createMockGitHub(handler: RouteHandler): Promise<GitHubClient> {
+export async function createMockGitHub(
+  handler: RouteHandler,
+  calls?: RecordedGithubCall[],
+): Promise<GitHubClient> {
   const privateKeyPem = await fakePkcs8Pem();
   const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
-    const method = init?.method ?? "GET";
+    const method = (init?.method ?? "GET").toUpperCase();
     const path =
       typeof url === "string"
         ? url.replace("https://api.github.com", "")
         : url.toString();
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    if (calls) {
+      calls.push({ method, path, body });
+    }
     if (path.includes("/app/installations/") && path.endsWith("/access_tokens")) {
       return new Response(JSON.stringify({ token: "installation-token" }), {
         status: 201,
@@ -21,11 +37,7 @@ export async function createMockGitHub(handler: RouteHandler): Promise<GitHubCli
     }
     const parsed = new URL(path, "https://api.github.com");
     const routePath = parsed.pathname + parsed.search;
-    const result = handler(
-      method,
-      routePath,
-      init?.body ? JSON.parse(String(init.body)) : undefined,
-    );
+    const result = handler(method, routePath, body);
     if (result.status === 204) {
       return new Response(null, { status: 204 });
     }
@@ -40,6 +52,8 @@ export async function createMockGitHub(handler: RouteHandler): Promise<GitHubCli
     fetchImpl: fetchImpl as typeof fetch,
   });
 }
+
+export { WRITE_INSTALLATION_TOKEN_PERMISSIONS };
 
 export async function fakePkcs8Pem(): Promise<string> {
   const keyPair = await crypto.subtle.generateKey(

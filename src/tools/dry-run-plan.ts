@@ -75,6 +75,16 @@ export async function buildCreateProjectRepoDryRunPlan(
   for (const label of STANDARD_FACTORY_LABELS) {
     steps.push({ id: `label_${label.name}`, status: "planned", detail: label.name });
   }
+  steps.push({
+    id: "verify_readme_placeholders",
+    status: "planned",
+    detail: "unknown without contents read permission",
+  });
+  steps.push({
+    id: "verify_wrangler_name",
+    status: "planned",
+    detail: "unknown without contents read permission",
+  });
 
   const github: GithubDryRunDiscovery = {
     installation_read_ok: false,
@@ -171,6 +181,8 @@ export async function buildCreateProjectRepoDryRunPlan(
         } else {
           warnings.push(`GET /repos/${repoFull} failed: ${repo.message}`);
           steps.push({ id: "read_repo", status: "failed", detail: repo.message });
+          github.repo_exists = null;
+          github.factory_owned = null;
         }
       } else {
         github.repo_exists = true;

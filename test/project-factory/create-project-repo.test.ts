@@ -1,8 +1,16 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
+import { targetBranchProtectionPayload } from "../../src/factory/branch-protection.js";
+import { FACTORY_TOPIC } from "../../src/factory/constants.js";
+import { STANDARD_FACTORY_LABELS } from "../../src/factory/labels.js";
 import { DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS } from "../../src/github/dry-run-installation.js";
 import { createProjectRepo } from "../../src/tools/create-project-repo.js";
-import { createMockGitHub, fakePkcs8Pem } from "./github-mock.js";
+import {
+  createMockGitHub,
+  fakePkcs8Pem,
+  type RecordedGithubCall,
+} from "./github-mock.js";
+import { githubBranchProtectionApiBody } from "./github-fixtures.js";
 
 const env: ProjectFactoryEnv = {
   PROJECT_FACTORY_GH_APP_ID: "5471521",
@@ -195,6 +203,7 @@ describe("createProjectRepo", () => {
   });
 
   it("is idempotent for an existing factory-owned repo", async () => {
+    const calls: RecordedGithubCall[] = [];
     const github = await createMockGitHub((method, path) => {
       if (method === "GET" && path === "/repos/didi-build/demo-app") {
         return { status: 200, body: { full_name: "didi-build/demo-app" } };
@@ -203,15 +212,7 @@ describe("createProjectRepo", () => {
         return { status: 200, body: { names: ["project-factory"] } };
       }
       if (method === "GET" && path.includes("/protection")) {
-        return {
-          status: 200,
-          body: {
-            required_status_checks: { strict: false, checks: [{ context: "check" }] },
-            required_pull_request_reviews: { required_approving_review_count: 0 },
-            allow_force_pushes: false,
-            allow_deletions: false,
-          },
-        };
+        return { status: 200, body: githubBranchProtectionApiBody() };
       }
       if (method === "GET" && path.endsWith("/README.md")) {
         return { status: 200, body: { content: btoa("# ok") } };
@@ -226,7 +227,7 @@ describe("createProjectRepo", () => {
         return { status: 422, body: { message: "already_exists" } };
       }
       return { status: 404 };
-    });
+    }, calls);
     const result = await createProjectRepo(
       {
         env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
@@ -245,6 +246,229 @@ describe("createProjectRepo", () => {
       status: "exists",
       repo_url: "https://github.com/didi-build/demo-app",
     });
+    const apiCalls = calls.filter((c) => !c.path.includes("/access_tokens"));
+    expect(apiCalls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "GET /repos/didi-build/demo-app",
+      "GET /repos/didi-build/demo-app/topics",
+      "GET /repos/didi-build/demo-app/topics",
+      "GET /repos/didi-build/demo-app/branches/main/protection",
+      `POST /repos/didi-build/demo-app/labels`,
+      `POST /repos/didi-build/demo-app/labels`,
+      `POST /repos/didi-build/demo-app/labels`,
+      "GET /repos/didi-build/demo-app/contents/README.md",
+      "GET /repos/didi-build/demo-app/contents/wrangler.jsonc",
+      "GET /repos/didi-build/demo-app/branches/main/protection",
+    ]);
+  });
+
+  it("creates a new repo with expected GitHub write payloads", async () => {
+    const calls: RecordedGithubCall[] = [];
+    let protectionReads = 0;
+    const github = await createMockGitHub((method, path) => {
+      if (method === "GET" && path === "/repos/didi-build/fresh-app") {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      if (method === "POST" && path.includes("/generate")) {
+        return { status: 201, body: { full_name: "didi-build/fresh-app" } };
+      }
+      if (method === "PUT" && path.endsWith("/topics")) {
+        return { status: 204 };
+      }
+      if (method === "GET" && path.includes("/protection")) {
+        protectionReads += 1;
+        if (protectionReads === 1) {
+          return { status: 200, body: { allow_force_pushes: { enabled: true } } };
+        }
+        return { status: 200, body: githubBranchProtectionApiBody() };
+      }
+      if (method === "PUT" && path.includes("/protection")) {
+        return { status: 200, body: githubBranchProtectionApiBody() };
+      }
+      if (method === "POST" && path.endsWith("/labels")) {
+        return { status: 201, body: {} };
+      }
+      if (method === "GET" && path.endsWith("/README.md")) {
+        return { status: 200, body: { content: btoa("# ok") } };
+      }
+      if (method === "GET" && path.endsWith("/wrangler.jsonc")) {
+        return {
+          status: 200,
+          body: { content: btoa('{"name":"fresh-app"}') },
+        };
+      }
+      return { status: 404 };
+    }, calls);
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-fresh",
+        caller: "test",
+        github,
+      },
+      {
+        name: "fresh-app",
+        description: "Fresh project",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-99",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({
+      status: "created",
+      repo_url: "https://github.com/didi-build/fresh-app",
+      dry_run: false,
+    });
+    const generate = calls.find(
+      (c) => c.method === "POST" && c.path.includes("/generate"),
+    );
+    expect(generate?.body).toEqual({
+      owner: "didi-build",
+      name: "fresh-app",
+      description: "Fresh project",
+      private: false,
+      include_all_branches: false,
+    });
+    const topicPut = calls.find(
+      (c) => c.method === "PUT" && c.path.endsWith("/topics"),
+    );
+    expect(topicPut?.body).toEqual({ names: [FACTORY_TOPIC] });
+    const protectionPut = calls.find(
+      (c) => c.method === "PUT" && c.path.includes("/protection"),
+    );
+    expect(protectionPut?.body).toEqual(targetBranchProtectionPayload());
+    const labelPosts = calls.filter(
+      (c) => c.method === "POST" && c.path.endsWith("/labels"),
+    );
+    expect(labelPosts).toHaveLength(3);
+    expect(labelPosts.map((c) => c.body)).toEqual(STANDARD_FACTORY_LABELS);
+  });
+
+  it("returns pending_bootstrap when protection is 404 right after generate", async () => {
+    const github = await createMockGitHub((method, path) => {
+      if (method === "GET" && path === "/repos/didi-build/async-app") {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      if (method === "POST" && path.includes("/generate")) {
+        return { status: 201, body: { full_name: "didi-build/async-app" } };
+      }
+      if (method === "PUT" && path.endsWith("/topics")) {
+        return { status: 204 };
+      }
+      if (method === "GET" && path.includes("/protection")) {
+        return { status: 404, body: { message: "Branch not found" } };
+      }
+      return { status: 404 };
+    });
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-pending",
+        caller: "test",
+        github,
+      },
+      {
+        name: "async-app",
+        description: "Async bootstrap",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-2",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({
+      status: "pending_bootstrap",
+      repo_url: "https://github.com/didi-build/async-app",
+    });
+  });
+
+  it("rejects invalid and reserved names with no GitHub API calls", async () => {
+    const fetchImpl = async () => {
+      throw new Error("GitHub fetch must not run for invalid names");
+    };
+    for (const name of ["ab", "launchpad", "pr-foo"]) {
+      const result = await createProjectRepo(
+        {
+          env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+          requestId: `req-invalid-${name}`,
+          caller: "test",
+          fetchImpl,
+        },
+        {
+          name,
+          description: "Demo",
+          approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+          dry_run: false,
+        },
+      );
+      expect(result).toHaveProperty("error");
+    }
+  });
+
+  it("returns upstream_error on GET 502 without adopting the repo on 422", async () => {
+    const writes: string[] = [];
+    const github = await createMockGitHub((method, path) => {
+      if (method !== "GET") {
+        writes.push(`${method} ${path}`);
+      }
+      if (method === "GET" && path === "/repos/didi-build/demo-app") {
+        return { status: 502, body: { message: "bad gateway" } };
+      }
+      if (method === "POST" && path.includes("/generate")) {
+        return { status: 422, body: { message: "name already exists" } };
+      }
+      return { status: 404 };
+    });
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-502",
+        caller: "test",
+        github,
+      },
+      {
+        name: "demo-app",
+        description: "Demo",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({
+      error: { code: "upstream_error", step: "read_repo" },
+    });
+    expect(
+      writes.filter((w) => w.startsWith("POST") && w.includes("generate")),
+    ).toHaveLength(0);
+    expect(writes.filter((w) => w.startsWith("PUT"))).toHaveLength(0);
+  });
+
+  it("writes audit on conflict_not_factory_owned", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const github = await createMockGitHub((method, path) => {
+      if (method === "GET" && path === "/repos/didi-build/conflict-app") {
+        return { status: 200, body: { full_name: "didi-build/conflict-app" } };
+      }
+      if (method === "GET" && path.endsWith("/topics")) {
+        return { status: 200, body: { names: [] } };
+      }
+      return { status: 404 };
+    });
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-conflict-audit",
+        caller: "test",
+        github,
+      },
+      {
+        name: "conflict-app",
+        description: "Demo",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({ error: { code: "conflict_not_factory_owned" } });
+    const auditLine = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((line) => line.includes("factory_call"));
+    expect(auditLine).toContain('"status":"conflict_not_factory_owned"');
+    expect(auditLine).toContain('"failed_step":"read_topics"');
   });
 
   it("writes an audit entry", async () => {

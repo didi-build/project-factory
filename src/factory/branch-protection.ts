@@ -16,6 +16,16 @@ export function targetBranchProtectionPayload() {
   };
 }
 
+function flagMatches(actual: unknown, expected: boolean): boolean {
+  if (typeof actual === "boolean") {
+    return actual === expected;
+  }
+  if (actual && typeof actual === "object" && "enabled" in actual) {
+    return (actual as { enabled?: boolean }).enabled === expected;
+  }
+  return false;
+}
+
 export function protectionLooksCorrect(
   protection: Record<string, unknown> | null,
 ): boolean {
@@ -33,7 +43,7 @@ export function protectionLooksCorrect(
   return (
     contexts.includes(REQUIRED_STATUS_CHECK) &&
     reviews?.required_approving_review_count === 0 &&
-    protection.allow_force_pushes === false &&
-    protection.allow_deletions === false
+    flagMatches(protection.allow_force_pushes, false) &&
+    flagMatches(protection.allow_deletions, false)
   );
 }

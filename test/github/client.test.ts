@@ -1,0 +1,78 @@
+import { generateKeyPairSync } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import {
+  GitHubClient,
+  WRITE_INSTALLATION_TOKEN_PERMISSIONS,
+} from "../../src/github/client.js";
+import { normalizePrivateKeyPem } from "../../src/github/pem.js";
+import { fakePkcs8Pem } from "../project-factory/github-mock.js";
+
+describe("GitHubClient installation token mint", () => {
+  it("requests scoped write permissions on the write path", async () => {
+    let mintBody: unknown;
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = normalizePrivateKeyPem(
+      privateKey.export({ type: "pkcs8", format: "pem" }) as string,
+    );
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: pem,
+      fetchImpl: async (url, init) => {
+        const path = String(url);
+        if (path.includes("access_tokens")) {
+          mintBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+          return new Response(JSON.stringify({ token: "t" }), { status: 201 });
+        }
+        return new Response("{}", { status: 404 });
+      },
+    });
+    await client.request("GET", "/repos/o/r");
+    expect(mintBody).toEqual({ permissions: WRITE_INSTALLATION_TOKEN_PERMISSIONS });
+    expect(mintBody).not.toHaveProperty("repositories");
+  });
+
+  it("maps token mint 401 to missing_secret without throwing", async () => {
+    const pem = await fakePkcs8Pem();
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: pem,
+      fetchImpl: async (url) => {
+        if (String(url).includes("access_tokens")) {
+          return new Response(JSON.stringify({ message: "bad credentials" }), {
+            status: 401,
+          });
+        }
+        return new Response("{}", { status: 200 });
+      },
+    });
+    const result = await client.request("GET", "/repos/o/r");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("missing_secret");
+    }
+  });
+
+  it("maps token mint 403 to permission_denied without throwing", async () => {
+    const pem = await fakePkcs8Pem();
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: pem,
+      fetchImpl: async (url) => {
+        if (String(url).includes("access_tokens")) {
+          return new Response(JSON.stringify({ message: "Forbidden" }), {
+            status: 403,
+          });
+        }
+        return new Response("{}", { status: 200 });
+      },
+    });
+    const result = await client.request("GET", "/repos/o/r");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("permission_denied");
+    }
+  });
+});
