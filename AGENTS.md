@@ -63,3 +63,4 @@ This file is the single source of truth for how agents work in this repository. 
 | `npm run init-project`       | Replace `{{…}}` placeholders; optionally run `nodrift init` when the project collects personal data                                                                    |
 | `npm run repo-settings`      | Dry-run, `--apply`, or `--verify` recommended GitHub repo settings                                                                                                     |
 | `npm run verify-action-pins` | Verify each pinned action SHA matches its version comment (`# vX.Y.Z`)                                                                                                 |
+| `npm run wrangler`           | Wrangler CLI (local dev; production deploy uses GitHub Actions)                                                                                                        |

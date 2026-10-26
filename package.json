@@ -25,6 +25,7 @@
     "init-project": "node scripts/init-project.mjs",
     "repo-settings": "node scripts/repo-settings.mjs",
     "verify-action-pins": "node scripts/verify-action-pins.mjs",
+    "wrangler": "wrangler",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -38,6 +39,7 @@
     ]
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "5.20261026.1",
     "@didi-build/nodrift": "0.1.0",
     "@eslint/js": "9.39.5",
     "@secretlint/secretlint-rule-preset-recommend": "10.2.2",
@@ -50,6 +52,13 @@
     "secretlint": "10.2.2",
     "typescript": "5.9.3",
     "typescript-eslint": "8.71.2",
-    "vitest": "3.2.7"
+    "vitest": "3.2.7",
+    "wrangler": "4.153.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "agents": "0.30.1",
+    "jose": "6.1.0",
+    "zod": "4.6.7"
   }
 }
