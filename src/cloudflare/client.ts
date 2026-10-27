@@ -3,6 +3,7 @@ import {
   assertMintPoliciesSafe,
   buildPreviewDeployTokenPolicies,
   buildProductionDeployTokenPolicies,
+  INDIVIDUAL_WORKERS_EDITOR_PERMISSION_ID,
   INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME,
   WORKERS_SCRIPTS_READ_PERMISSION_NAME,
 } from "./deploy-token-policy.js";
@@ -211,6 +212,52 @@ export class CloudflareFactoryClient {
     return { ok: false, error: mapCfFailure(settings, "cf_worker_settings") };
   }
 
+  async resolveWorkerScriptTag(
+    workerName: string,
+  ): Promise<
+    | { ok: true; scriptTag: string }
+    | { ok: false; error: ReturnType<typeof mapCfFailure> }
+  > {
+    const account = await this.resolveAccountId();
+    if (!account.ok) {
+      return account;
+    }
+    const listed = await cfJsonListAll<{ id: string; tag?: string }>(
+      this.token,
+      `/accounts/${account.accountId}/workers/scripts`,
+      this.fetchImpl,
+    );
+    if (!listed.ok) {
+      return { ok: false, error: mapCfFailure(listed, "cf_list_worker_scripts") };
+    }
+    const script = listed.data.find((s) => s.id === workerName);
+    if (!script) {
+      return {
+        ok: false,
+        error: mapCfFailure(
+          {
+            status: 404,
+            message: `worker script ${workerName} not found in account script list`,
+          },
+          "cf_worker_script_tag",
+        ),
+      };
+    }
+    if (!script.tag) {
+      return {
+        ok: false,
+        error: mapCfFailure(
+          {
+            status: 400,
+            message: `worker script ${workerName} is missing tag metadata`,
+          },
+          "cf_worker_script_tag",
+        ),
+      };
+    }
+    return { ok: true, scriptTag: script.tag };
+  }
+
   async ensurePlaceholderWorker(
     workerName: string,
   ): Promise<
@@ -249,7 +296,11 @@ export class CloudflareFactoryClient {
       },
     );
     const text = await response.text();
-    let parsed: { success?: boolean; errors?: { message: string }[] };
+    let parsed: {
+      success?: boolean;
+      errors?: { message: string }[];
+      result?: { id?: string; tag?: string };
+    };
     try {
       parsed = text ? (JSON.parse(text) as typeof parsed) : {};
     } catch {
@@ -351,7 +402,7 @@ export class CloudflareFactoryClient {
       };
     }
     const individualWorkersEditor = permissionGroups.data.find(
-      (g) => g.name === INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME,
+      (g) => g.id === INDIVIDUAL_WORKERS_EDITOR_PERMISSION_ID,
     );
     const workersScriptsRead = permissionGroups.data.find(
       (g) => g.name === WORKERS_SCRIPTS_READ_PERMISSION_NAME,
@@ -362,7 +413,7 @@ export class CloudflareFactoryClient {
         error: mapCfFailure(
           {
             status: 400,
-            message: `${INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME} permission group not found`,
+            message: `${INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME} permission group id not found`,
           },
           "cf_permission_groups",
         ),
@@ -383,12 +434,24 @@ export class CloudflareFactoryClient {
       };
     }
 
+    const scriptTagResult = await this.resolveWorkerScriptTag(workerName);
+    if (!scriptTagResult.ok) {
+      return scriptTagResult;
+    }
+    const scriptTag = scriptTagResult.scriptTag;
+
+    const editorGroup = {
+      id: INDIVIDUAL_WORKERS_EDITOR_PERMISSION_ID,
+      name: INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME,
+    };
+
     let policies;
     if (mode === "preview") {
-      policies = buildPreviewDeployTokenPolicies(account.accountId, workerName, {
-        id: individualWorkersEditor.id,
-        name: individualWorkersEditor.name,
-      });
+      policies = buildPreviewDeployTokenPolicies(
+        account.accountId,
+        scriptTag,
+        editorGroup,
+      );
     } else {
       if (!workersScriptsRead) {
         return {
@@ -402,11 +465,8 @@ export class CloudflareFactoryClient {
           ),
         };
       }
-      policies = buildProductionDeployTokenPolicies(account.accountId, workerName, {
-        individualWorkersEditor: {
-          id: individualWorkersEditor.id,
-          name: individualWorkersEditor.name,
-        },
+      policies = buildProductionDeployTokenPolicies(account.accountId, scriptTag, {
+        individualWorkersEditor: editorGroup,
         workersScriptsRead: {
           id: workersScriptsRead.id,
           name: workersScriptsRead.name,

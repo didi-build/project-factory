@@ -28,7 +28,11 @@ export const EXPECTED_PRODUCTION_DEPLOYMENT_BRANCH_POLICY_BODY = {
 };
 
 const CF_ACCOUNT = "cf-account-1";
-const CF_EDITOR_ID = "pg-individual-workers-editor";
+export const EXPECTED_DEMO_APP_PRODUCTION_SCRIPT_TAG =
+  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+export const EXPECTED_DEMO_APP_PREVIEW_SCRIPT_TAG = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+const CF_EDITOR_ID = "7e79ec33834341f28dd431ab73884400";
 const CF_READ_ID = "pg-workers-scripts-read";
 
 export const EXPECTED_CF_PREVIEW_TOKEN_POST_BODY = {
@@ -37,7 +41,10 @@ export const EXPECTED_CF_PREVIEW_TOKEN_POST_BODY = {
     {
       effect: "allow",
       resources: {
-        [`com.cloudflare.edge.worker.script.${CF_ACCOUNT}.demo-app-preview`]: "*",
+        [`com.cloudflare.api.account.${CF_ACCOUNT}`]: {
+          [`com.cloudflare.edge.worker.script.${EXPECTED_DEMO_APP_PREVIEW_SCRIPT_TAG}`]:
+            "*",
+        },
       },
       permission_groups: [{ id: CF_EDITOR_ID, name: "Individual Workers Editor" }],
     },
@@ -50,7 +57,10 @@ export const EXPECTED_CF_PRODUCTION_TOKEN_POST_BODY = {
     {
       effect: "allow",
       resources: {
-        [`com.cloudflare.edge.worker.script.${CF_ACCOUNT}.demo-app`]: "*",
+        [`com.cloudflare.api.account.${CF_ACCOUNT}`]: {
+          [`com.cloudflare.edge.worker.script.${EXPECTED_DEMO_APP_PRODUCTION_SCRIPT_TAG}`]:
+            "*",
+        },
       },
       permission_groups: [{ id: CF_EDITOR_ID, name: "Individual Workers Editor" }],
     },

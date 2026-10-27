@@ -11,6 +11,8 @@ import { provisionCloudflare } from "../../src/tools/provision-cloudflare.js";
 import {
   EXPECTED_CF_PREVIEW_TOKEN_POST_BODY,
   EXPECTED_CF_PRODUCTION_TOKEN_POST_BODY,
+  EXPECTED_DEMO_APP_PREVIEW_SCRIPT_TAG,
+  EXPECTED_DEMO_APP_PRODUCTION_SCRIPT_TAG,
   EXPECTED_PRODUCTION_DEPLOYMENT_BRANCH_POLICY_BODY,
   EXPECTED_PRODUCTION_ENVIRONMENT_PUT_BODY,
   EXPECTED_PROVISION_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
@@ -315,7 +317,27 @@ function githubHandlers(state: GithubState, requests: RecordedRequest[]) {
   };
 }
 
-function cloudflareHandlers(requests: RecordedRequest[], workers: Set<string>) {
+type WorkerScriptRegistry = Map<string, string | undefined>;
+
+function defaultWorkerTags(): WorkerScriptRegistry {
+  return new Map([
+    ["demo-app", EXPECTED_DEMO_APP_PRODUCTION_SCRIPT_TAG],
+    ["demo-app-preview", EXPECTED_DEMO_APP_PREVIEW_SCRIPT_TAG],
+  ]);
+}
+
+function isWorkerScriptListRequest(url: string, method: string): boolean {
+  if (method !== "GET" || !url.includes("/workers/scripts")) {
+    return false;
+  }
+  const path = url.split("?")[0];
+  return path.endsWith("/workers/scripts");
+}
+
+function cloudflareHandlers(
+  requests: RecordedRequest[],
+  workers: WorkerScriptRegistry,
+) {
   return (req: RecordedRequest) => {
     requests.push(req);
     if (req.url.endsWith("/accounts") && req.method === "GET") {
@@ -329,6 +351,12 @@ function cloudflareHandlers(requests: RecordedRequest[], workers: Set<string>) {
         status: 200,
         body: { success: true, result: { subdomain: "didi-build" } },
       };
+    }
+    if (isWorkerScriptListRequest(req.url, req.method)) {
+      const scripts = [...workers.entries()].map(([id, tag]) =>
+        tag === undefined ? { id } : { id, tag },
+      );
+      return { status: 200, body: { success: true, result: scripts } };
     }
     if (req.url.includes("/workers/scripts/") && req.url.endsWith("/settings")) {
       const name = req.url.split("/workers/scripts/")[1]?.split("/")[0];
@@ -353,7 +381,7 @@ function cloudflareHandlers(requests: RecordedRequest[], workers: Set<string>) {
           success: true,
           result: [
             {
-              id: "pg-individual-workers-editor",
+              id: "7e79ec33834341f28dd431ab73884400",
               name: "Individual Workers Editor",
               scopes: ["com.cloudflare.api.account.workers"],
             },
@@ -382,11 +410,25 @@ function cloudflareHandlers(requests: RecordedRequest[], workers: Set<string>) {
       };
     }
     if (req.url.includes("/workers/scripts/") && req.method === "PUT") {
-      const name = req.url.split("/workers/scripts/")[1];
+      const name = req.url.split("/workers/scripts/")[1]?.split("?")[0];
       if (name) {
-        workers.add(name);
+        if (!workers.has(name)) {
+          workers.set(
+            name,
+            name.endsWith("-preview")
+              ? EXPECTED_DEMO_APP_PREVIEW_SCRIPT_TAG
+              : EXPECTED_DEMO_APP_PRODUCTION_SCRIPT_TAG,
+          );
+        }
+        const tag = workers.get(name);
+        return {
+          status: 200,
+          body: {
+            success: true,
+            result: tag === undefined ? { id: name } : { id: name, tag },
+          },
+        };
       }
-      return { status: 200, body: { success: true, result: { id: name } } };
     }
     if (req.url.includes("/subdomain") && req.method === "POST") {
       return { status: 200, body: { success: true, result: {} } };
@@ -412,7 +454,7 @@ function defaultGithubState(overrides?: Partial<GithubState>): GithubState {
 describe("provisionCloudflare", () => {
   it("dry_run makes no Cloudflare or GitHub writes except installation token mint", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = new Set<string>();
+    const workers = defaultWorkerTags();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const state = defaultGithubState();
     const fetchImpl = buildFetch((req) => {
@@ -461,7 +503,7 @@ describe("provisionCloudflare", () => {
 
   it("creates workers, environments, tokens, and secrets on first run", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = new Set<string>();
+    const workers = defaultWorkerTags();
     const state = defaultGithubState();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const fetchImpl = buildFetch((req) => {
@@ -551,7 +593,7 @@ describe("provisionCloudflare", () => {
 
   it("fails closed with permission_denied when production environment GET returns 403", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = new Set<string>();
+    const workers = defaultWorkerTags();
     const state = defaultGithubState({
       productionReview: {
         reviewerId: REVIEWER_ID,
@@ -597,7 +639,7 @@ describe("provisionCloudflare", () => {
 
   it("fails closed with permission_denied when deployment-branch-policies GET returns 403", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = new Set<string>();
+    const workers = defaultWorkerTags();
     const state = defaultGithubState({
       productionReview: {
         reviewerId: REVIEWER_ID,
@@ -644,7 +686,7 @@ describe("provisionCloudflare", () => {
 
   it("revokes minted preview token when GitHub secret PUT fails", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = new Set<string>();
+    const workers = defaultWorkerTags();
     const state = defaultGithubState({
       productionReview: {
         reviewerId: null,
@@ -691,7 +733,7 @@ describe("provisionCloudflare", () => {
 
   it("fails closed when production environment read-back does not match", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = new Set<string>();
+    const workers = defaultWorkerTags();
     const state = defaultGithubState({
       productionReview: { reviewerId: null, branchPolicies: [], failReadBack: true },
     });
@@ -733,9 +775,51 @@ describe("provisionCloudflare", () => {
     expect(productionSecretPut).toBeUndefined();
   });
 
+  it("fails closed without minting when worker script tag is missing", async () => {
+    const requests: RecordedRequest[] = [];
+    const workers: WorkerScriptRegistry = new Map([
+      ["demo-app", undefined],
+      ["demo-app-preview", undefined],
+    ]);
+    const state = defaultGithubState();
+    const fetchImpl = buildFetch((req) => {
+      if (req.url.includes("api.github.com")) {
+        return githubHandlers(state, requests)(req);
+      }
+      return cloudflareHandlers(requests, workers)(req);
+    });
+
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-missing-tag",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+
+    expect(result).toMatchObject({
+      error: { step: "cf_worker_script_tag" },
+    });
+    const tokenMints = requests.filter(
+      (r) => r.url.endsWith("/tokens") && r.method === "POST",
+    );
+    expect(tokenMints).toHaveLength(0);
+    expect(state.productionSecrets).toHaveLength(0);
+  });
+
   it("rerun is idempotent and skips existing resources", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = new Set(["demo-app", "demo-app-preview"]);
+    const workers = defaultWorkerTags();
     const state = defaultGithubState({
       repoSecrets: [
         REPO_SECRET_CLOUDFLARE_API_TOKEN_PREVIEW,
@@ -783,7 +867,7 @@ describe("provisionCloudflare", () => {
 
   it("refuses non-factory repos", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = new Set<string>();
+    const workers = defaultWorkerTags();
     const state = defaultGithubState({ factoryTopic: false });
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
@@ -868,7 +952,7 @@ describe("provisionCloudflare", () => {
 
   it("maps Cloudflare permission errors", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = new Set<string>();
+    const workers = defaultWorkerTags();
     const state = defaultGithubState();
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {

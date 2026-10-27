@@ -1,33 +1,54 @@
+export type CfTokenResources = Record<string, string | Record<string, string>>;
+
 export type CfTokenPolicy = {
   effect: "allow";
-  resources: Record<string, string>;
+  resources: CfTokenResources;
   permission_groups: { id: string; name: string }[];
 };
 
 /** Cloudflare account API token permission group for a single Worker script. */
 export const INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME = "Individual Workers Editor";
 
+export const INDIVIDUAL_WORKERS_EDITOR_PERMISSION_ID =
+  "7e79ec33834341f28dd431ab73884400";
+
 export const WORKERS_SCRIPTS_READ_PERMISSION_NAME = "Workers Scripts Read";
 
+const SCRIPT_TAG_PATTERN = /^[a-f0-9]{32}$/i;
+
+export function assertWorkerScriptTag(scriptTag: string): void {
+  if (!SCRIPT_TAG_PATTERN.test(scriptTag)) {
+    throw new Error(`worker script tag must be 32 hex characters, got ${scriptTag}`);
+  }
+}
+
 /**
- * Per-Worker script resource key for account API token policies.
+ * Nested per-script resources for Individual Workers Editor (account key wraps script tag).
  * @see https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/#account-api-token-account-resources
- * @see https://developers.cloudflare.com/r2/api/tokens/#resources (com.cloudflare.edge.* pattern)
  */
-export function workerScriptResourceKey(accountId: string, workerName: string): string {
-  return `com.cloudflare.edge.worker.script.${accountId}.${workerName}`;
+export function workerScriptPolicyResources(
+  accountId: string,
+  scriptTag: string,
+): CfTokenResources {
+  assertWorkerScriptTag(scriptTag);
+  const accountKey = `com.cloudflare.api.account.${accountId}`;
+  const scriptKey = `com.cloudflare.edge.worker.script.${scriptTag}`;
+  return {
+    [accountKey]: {
+      [scriptKey]: "*",
+    },
+  };
 }
 
 export function buildPreviewDeployTokenPolicies(
   accountId: string,
-  workerName: string,
+  scriptTag: string,
   individualWorkersEditor: { id: string; name: string },
 ): CfTokenPolicy[] {
-  const workerResource = workerScriptResourceKey(accountId, workerName);
   return [
     {
       effect: "allow",
-      resources: { [workerResource]: "*" },
+      resources: workerScriptPolicyResources(accountId, scriptTag),
       permission_groups: [
         {
           id: individualWorkersEditor.id,
@@ -40,18 +61,17 @@ export function buildPreviewDeployTokenPolicies(
 
 export function buildProductionDeployTokenPolicies(
   accountId: string,
-  workerName: string,
+  scriptTag: string,
   permissionGroups: {
     individualWorkersEditor: { id: string; name: string };
     workersScriptsRead: { id: string; name: string };
   },
 ): CfTokenPolicy[] {
-  const workerResource = workerScriptResourceKey(accountId, workerName);
   const accountResource = `com.cloudflare.api.account.${accountId}`;
   return [
     {
       effect: "allow",
-      resources: { [workerResource]: "*" },
+      resources: workerScriptPolicyResources(accountId, scriptTag),
       permission_groups: [
         {
           id: permissionGroups.individualWorkersEditor.id,
@@ -72,21 +92,6 @@ export function buildProductionDeployTokenPolicies(
   ];
 }
 
-/** @deprecated Use buildPreviewDeployTokenPolicies / buildProductionDeployTokenPolicies */
-export function buildWorkerDeployTokenPolicies(
-  accountId: string,
-  workerName: string,
-  permissionGroups: {
-    workersEditor: { id: string; name: string };
-    workersScriptsRead: { id: string; name: string };
-  },
-): CfTokenPolicy[] {
-  return buildProductionDeployTokenPolicies(accountId, workerName, {
-    individualWorkersEditor: permissionGroups.workersEditor,
-    workersScriptsRead: permissionGroups.workersScriptsRead,
-  });
-}
-
 const FORBIDDEN_MINT_PERMISSION_NAMES = [
   "API Tokens",
   "D1",
@@ -95,9 +100,15 @@ const FORBIDDEN_MINT_PERMISSION_NAMES = [
 ] as const;
 
 export function assertIndividualWorkersEditorPermissionGroup(group: {
+  id: string;
   name: string;
   scopes: string[];
 }): void {
+  if (group.id !== INDIVIDUAL_WORKERS_EDITOR_PERMISSION_ID) {
+    throw new Error(
+      `expected permission group id ${INDIVIDUAL_WORKERS_EDITOR_PERMISSION_ID}, got ${group.id}`,
+    );
+  }
   if (group.name !== INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME) {
     throw new Error(
       `expected permission group ${INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME}, got ${group.name}`,
