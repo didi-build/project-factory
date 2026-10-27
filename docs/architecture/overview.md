@@ -13,8 +13,10 @@ Tool to help set-up new projects
 
 ## Interfaces
 
-- **Inbound:** MCP over `POST /mcp` on Worker `project-factory` (bearer auth). Tools: `create_project_repo`, `provision_cloudflare`, `project_status`.
-- **Outbound:** GitHub App installation API, Cloudflare account API (Workers scripts and account token minting), Linear API (later steps). See [ADR 0004](../decisions/0004-project-factory-architecture.md).
+- **Inbound:** Remote MCP over `POST /mcp` on Worker `project-factory`, with bearer auth (`PROJECT_FACTORY_BEARER_TOKEN`) and `X-Factory-Caller` for audit.
+- **Outbound:** GitHub App installation API (repo creation), Linear GraphQL API (`PROJECT_FACTORY_LINEAR_API_KEY`), Cloudflare account API (Workers scripts and account token minting). See [ADR 0004](../decisions/0004-project-factory-architecture.md).
+
+Factory tools: `create_project_repo`, `create_linear_project`, `provision_cloudflare`, and read-only `project_status`. All write tools default to `dry_run: true` and require `approval_ref`.
 
 ## Environments
 

@@ -17,7 +17,7 @@ Created from [Launchpad](https://github.com/didi-build/launchpad) by Didi Build 
 | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `LICENSE`                                                                        | Project license (from `LICENSE.project` at init)                                                          |
 | `LICENSES/launchpad-MIT.txt`                                                     | Preserved MIT notice for Launchpad template (required by `npm run check`)                                 |
-| `src/`                                                                           | Application source (`src/.gitkeep` until you add code)                                                    |
+| `src/`                                                                           | Cloudflare Worker and Project factory MCP tools                                                           |
 | `test/`                                                                          | Vitest tests (script and integration tests under `test/`)                                                 |
 | `docs/`                                                                          | Architecture, decisions, runbooks — see [docs/README.md](./docs/README.md)                                |
 | `AGENTS.md`                                                                      | Single source of truth for agent rules                                                                    |
@@ -51,7 +51,7 @@ Remote MCP server on Cloudflare Worker `project-factory` (see [ADR 0004](./docs/
 - **Auth:** `Authorization: Bearer <PROJECT_FACTORY_BEARER_TOKEN>` on every request except `/health`
 - **Traceability:** `X-Factory-Caller: <bot name>` (recorded in audit logs)
 
-Tools in this slice: `create_project_repo`, `provision_cloudflare`, `project_status`.
+Tools in this slice: `create_project_repo`, `create_linear_project`, `provision_cloudflare`, `project_status`.
 
 ### `provision_cloudflare` (Step 3)
 
