@@ -1,6 +1,10 @@
 import {
+  assertIndividualWorkersEditorPermissionGroup,
   assertMintPoliciesSafe,
-  buildWorkerDeployTokenPolicies,
+  buildPreviewDeployTokenPolicies,
+  buildProductionDeployTokenPolicies,
+  INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME,
+  WORKERS_SCRIPTS_READ_PERMISSION_NAME,
 } from "./deploy-token-policy.js";
 import { FACTORY_WORKER_TAG } from "../factory/provision-constants.js";
 import type { ProjectFactoryEnv } from "../env.js";
@@ -58,6 +62,32 @@ async function cfJson<T>(
     return { ok: false, status: response.status, message };
   }
   return { ok: true, data: parsed.result as T };
+}
+
+async function cfJsonListAll<T>(
+  token: string,
+  path: string,
+  fetchImpl: typeof fetch,
+): Promise<CfResult<T[]>> {
+  const all: T[] = [];
+  let page = 1;
+  while (true) {
+    const separator = path.includes("?") ? "&" : "?";
+    const result = await cfJson<T[]>(
+      token,
+      "GET",
+      `${path}${separator}page=${page}&per_page=50`,
+      fetchImpl,
+    );
+    if (!result.ok) {
+      return result;
+    }
+    all.push(...result.data);
+    if (result.data.length < 50) {
+      return { ok: true, data: all };
+    }
+    page += 1;
+  }
 }
 
 function mapCfFailure(
@@ -251,9 +281,29 @@ export class CloudflareFactoryClient {
     return { ok: true, created: true };
   }
 
+  async revokeDeployToken(
+    tokenId: string,
+  ): Promise<{ ok: true } | { ok: false; error: ReturnType<typeof mapCfFailure> }> {
+    const account = await this.resolveAccountId();
+    if (!account.ok) {
+      return account;
+    }
+    const deleted = await cfJson<unknown>(
+      this.token,
+      "DELETE",
+      `/accounts/${account.accountId}/tokens/${tokenId}`,
+      this.fetchImpl,
+    );
+    if (!deleted.ok) {
+      return { ok: false, error: mapCfFailure(deleted, "cf_revoke_token") };
+    }
+    return { ok: true };
+  }
+
   async mintWorkerDeployToken(
     workerName: string,
     tokenName: string,
+    mode: "preview" | "production",
   ): Promise<
     | { ok: true; tokenId: string; tokenValue: string; created: boolean }
     | { ok: false; error: ReturnType<typeof mapCfFailure> }
@@ -262,34 +312,35 @@ export class CloudflareFactoryClient {
     if (!account.ok) {
       return account;
     }
-    const listed = await cfJson<{ id: string; name: string }[]>(
+    const listed = await cfJsonListAll<{ id: string; name: string }>(
       this.token,
-      "GET",
       `/accounts/${account.accountId}/tokens`,
       this.fetchImpl,
     );
-    if (listed.ok) {
-      const found = listed.data.find((t) => t.name === tokenName);
-      if (found) {
-        return {
-          ok: false,
-          error: mapCfFailure(
-            {
-              status: 409,
-              message:
-                "deploy token already exists but value is not retrievable; set GitHub secret manually or delete the token",
-            },
-            "cf_mint_token",
-          ),
-        };
-      }
+    if (!listed.ok) {
+      return { ok: false, error: mapCfFailure(listed, "cf_list_tokens") };
+    }
+    const found = listed.data.find((t) => t.name === tokenName);
+    if (found) {
+      return {
+        ok: false,
+        error: mapCfFailure(
+          {
+            status: 409,
+            message:
+              "deploy token already exists but value is not retrievable; set GitHub secret manually or delete the token",
+          },
+          "cf_mint_token",
+        ),
+      };
     }
 
-    const permissionGroups = await cfJson<
-      { id: string; name: string; scopes: string[] }[]
-    >(
+    const permissionGroups = await cfJsonListAll<{
+      id: string;
+      name: string;
+      scopes: string[];
+    }>(
       this.token,
-      "GET",
       `/accounts/${account.accountId}/tokens/permission_groups`,
       this.fetchImpl,
     );
@@ -299,33 +350,70 @@ export class CloudflareFactoryClient {
         error: mapCfFailure(permissionGroups, "cf_permission_groups"),
       };
     }
-    const workersEditor = permissionGroups.data.find(
-      (g) => g.name === "Workers Editor" || g.name === "Individual Workers Editor",
+    const individualWorkersEditor = permissionGroups.data.find(
+      (g) => g.name === INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME,
     );
     const workersScriptsRead = permissionGroups.data.find(
-      (g) => g.name === "Workers Scripts Read",
+      (g) => g.name === WORKERS_SCRIPTS_READ_PERMISSION_NAME,
     );
-    if (!workersEditor || !workersScriptsRead) {
+    if (!individualWorkersEditor) {
       return {
         ok: false,
         error: mapCfFailure(
           {
             status: 400,
-            message:
-              "Workers Editor or Workers Scripts Read permission group not found",
+            message: `${INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME} permission group not found`,
+          },
+          "cf_permission_groups",
+        ),
+      };
+    }
+    try {
+      assertIndividualWorkersEditorPermissionGroup(individualWorkersEditor);
+    } catch (err) {
+      return {
+        ok: false,
+        error: mapCfFailure(
+          {
+            status: 400,
+            message: err instanceof Error ? err.message : "invalid editor group",
           },
           "cf_permission_groups",
         ),
       };
     }
 
-    const policies = buildWorkerDeployTokenPolicies(account.accountId, workerName, {
-      workersEditor: { id: workersEditor.id, name: workersEditor.name },
-      workersScriptsRead: {
-        id: workersScriptsRead.id,
-        name: workersScriptsRead.name,
-      },
-    });
+    let policies;
+    if (mode === "preview") {
+      policies = buildPreviewDeployTokenPolicies(account.accountId, workerName, {
+        id: individualWorkersEditor.id,
+        name: individualWorkersEditor.name,
+      });
+    } else {
+      if (!workersScriptsRead) {
+        return {
+          ok: false,
+          error: mapCfFailure(
+            {
+              status: 400,
+              message: `${WORKERS_SCRIPTS_READ_PERMISSION_NAME} permission group not found`,
+            },
+            "cf_permission_groups",
+          ),
+        };
+      }
+      policies = buildProductionDeployTokenPolicies(account.accountId, workerName, {
+        individualWorkersEditor: {
+          id: individualWorkersEditor.id,
+          name: individualWorkersEditor.name,
+        },
+        workersScriptsRead: {
+          id: workersScriptsRead.id,
+          name: workersScriptsRead.name,
+        },
+      });
+    }
+
     try {
       assertMintPoliciesSafe(policies);
     } catch (err) {

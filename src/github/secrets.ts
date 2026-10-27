@@ -85,15 +85,27 @@ export async function listRepoSecretNames(
   | { ok: true; names: string[] }
   | { ok: false; error: ReturnType<typeof mapGithubFailure> }
 > {
-  const result = await github.request("GET", `/repos/${repoFull}/actions/secrets`);
-  if (!result.ok) {
-    return { ok: false, error: mapGithubFailure(result.error, "list_repo_secrets") };
+  const names: string[] = [];
+  let page = 1;
+  while (true) {
+    const result = await github.request(
+      "GET",
+      `/repos/${repoFull}/actions/secrets?per_page=100&page=${page}`,
+    );
+    if (!result.ok) {
+      return { ok: false, error: mapGithubFailure(result.error, "list_repo_secrets") };
+    }
+    const secrets =
+      result.data && typeof result.data === "object"
+        ? ((result.data as { secrets?: { name: string }[] }).secrets ?? [])
+        : [];
+    names.push(...secrets.map((s) => s.name));
+    if (secrets.length < 100) {
+      break;
+    }
+    page += 1;
   }
-  const secrets =
-    result.data && typeof result.data === "object"
-      ? ((result.data as { secrets?: { name: string }[] }).secrets ?? [])
-      : [];
-  return { ok: true, names: secrets.map((s) => s.name).sort() };
+  return { ok: true, names: names.sort() };
 }
 
 export async function listEnvironmentSecretNames(
@@ -104,21 +116,30 @@ export async function listEnvironmentSecretNames(
   | { ok: true; names: string[] }
   | { ok: false; error: ReturnType<typeof mapGithubFailure> }
 > {
-  const result = await github.request(
-    "GET",
-    `/repos/${repoFull}/environments/${environment}/secrets`,
-  );
-  if (!result.ok) {
-    return {
-      ok: false,
-      error: mapGithubFailure(result.error, "list_environment_secrets"),
-    };
+  const names: string[] = [];
+  let page = 1;
+  while (true) {
+    const result = await github.request(
+      "GET",
+      `/repos/${repoFull}/environments/${environment}/secrets?per_page=100&page=${page}`,
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: mapGithubFailure(result.error, "list_environment_secrets"),
+      };
+    }
+    const secrets =
+      result.data && typeof result.data === "object"
+        ? ((result.data as { secrets?: { name: string }[] }).secrets ?? [])
+        : [];
+    names.push(...secrets.map((s) => s.name));
+    if (secrets.length < 100) {
+      break;
+    }
+    page += 1;
   }
-  const secrets =
-    result.data && typeof result.data === "object"
-      ? ((result.data as { secrets?: { name: string }[] }).secrets ?? [])
-      : [];
-  return { ok: true, names: secrets.map((s) => s.name).sort() };
+  return { ok: true, names: names.sort() };
 }
 
 export async function repoSecretExists(

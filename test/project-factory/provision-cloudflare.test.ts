@@ -9,8 +9,8 @@ import {
 } from "../../src/factory/provision-constants.js";
 import { provisionCloudflare } from "../../src/tools/provision-cloudflare.js";
 import {
-  EXPECTED_CF_PREVIEW_TOKEN_POLICIES,
-  EXPECTED_CF_PRODUCTION_TOKEN_POLICIES,
+  EXPECTED_CF_PREVIEW_TOKEN_POST_BODY,
+  EXPECTED_CF_PRODUCTION_TOKEN_POST_BODY,
   EXPECTED_PRODUCTION_DEPLOYMENT_BRANCH_POLICY_BODY,
   EXPECTED_PRODUCTION_ENVIRONMENT_PUT_BODY,
   EXPECTED_PROVISION_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS,
@@ -68,8 +68,41 @@ type GithubState = {
     reviewerId: number | null;
     branchPolicies: string[];
     failReadBack?: boolean;
+    verifyEnvironment403?: boolean;
+    verifyBranchPolicies403?: boolean;
+    failPreviewSecretPut?: boolean;
+    productionEnvGetCount?: number;
   };
 };
+
+function productionEnvironmentGetBody(state: GithubState) {
+  const reviewerId = state.productionReview.failReadBack
+    ? 9999
+    : state.productionReview.reviewerId;
+  const protection_rules = state.productionReview.failReadBack
+    ? []
+    : reviewerId
+      ? [
+          {
+            id: 1,
+            type: "required_reviewers",
+            reviewers: [
+              {
+                type: "User",
+                reviewer: { id: reviewerId, login: REVIEWER_LOGIN },
+              },
+            ],
+          },
+        ]
+      : [];
+  return {
+    name: "production",
+    protection_rules,
+    deployment_branch_policy: state.productionReview.failReadBack
+      ? { protected_branches: true, custom_branch_policies: false }
+      : { protected_branches: false, custom_branch_policies: true },
+  };
+}
 
 function buildFetch(
   handler: (req: RecordedRequest) => { status: number; body?: unknown },
@@ -165,34 +198,36 @@ function githubHandlers(state: GithubState, requests: RecordedRequest[]) {
       req.url.includes("/environments/production/deployment-branch-policies") &&
       req.method === "GET"
     ) {
+      if (state.productionReview.verifyBranchPolicies403) {
+        return { status: 403, body: { message: "Forbidden" } };
+      }
       const policies = state.productionReview.failReadBack
         ? []
-        : state.productionReview.branchPolicies.map((name) => ({ name }));
+        : state.productionReview.branchPolicies.map((name) => ({
+            name,
+            type: "branch",
+          }));
       return { status: 200, body: { branch_policies: policies } };
     }
     if (
       req.method === "GET" &&
-      req.url.endsWith("/environments/production") &&
+      req.url.includes("/environments/production") &&
       !req.url.includes("/secrets") &&
       !req.url.includes("deployment-branch-policies")
     ) {
       if (!state.environments.includes("production")) {
         return { status: 404, body: { message: "Not Found" } };
       }
-      const reviewerId = state.productionReview.failReadBack
-        ? 9999
-        : state.productionReview.reviewerId;
+      if (state.productionReview.verifyEnvironment403) {
+        const count = (state.productionReview.productionEnvGetCount ?? 0) + 1;
+        state.productionReview.productionEnvGetCount = count;
+        if (count > 1) {
+          return { status: 403, body: { message: "Forbidden" } };
+        }
+      }
       return {
         status: 200,
-        body: {
-          name: "production",
-          reviewers: reviewerId
-            ? [{ type: "User", reviewer: { id: reviewerId, login: REVIEWER_LOGIN } }]
-            : [],
-          deployment_branch_policy: state.productionReview.failReadBack
-            ? { protected_branches: true, custom_branch_policies: false }
-            : { protected_branches: false, custom_branch_policies: true },
-        },
+        body: productionEnvironmentGetBody(state),
       };
     }
     if (req.url.endsWith("/environments") && req.method === "GET") {
@@ -213,6 +248,12 @@ function githubHandlers(state: GithubState, requests: RecordedRequest[]) {
     }
     if (req.method === "PUT" && req.url.includes("/actions/secrets/")) {
       const name = decodeURIComponent(req.url.split("/actions/secrets/")[1] ?? "");
+      if (
+        state.productionReview.failPreviewSecretPut &&
+        name === REPO_SECRET_CLOUDFLARE_API_TOKEN_PREVIEW
+      ) {
+        return { status: 500, body: { message: "server error" } };
+      }
       if (name && !state.repoSecrets.includes(name)) {
         state.repoSecrets.push(name);
       }
@@ -312,9 +353,9 @@ function cloudflareHandlers(requests: RecordedRequest[], workers: Set<string>) {
           success: true,
           result: [
             {
-              id: "pg-workers-editor",
-              name: "Workers Editor",
-              scopes: ["account"],
+              id: "pg-individual-workers-editor",
+              name: "Individual Workers Editor",
+              scopes: ["com.cloudflare.api.account.workers"],
             },
             {
               id: "pg-workers-scripts-read",
@@ -325,8 +366,11 @@ function cloudflareHandlers(requests: RecordedRequest[], workers: Set<string>) {
         },
       };
     }
-    if (req.url.endsWith("/tokens") && req.method === "GET") {
+    if (req.url.includes("/tokens") && req.method === "GET") {
       return { status: 200, body: { success: true, result: [] } };
+    }
+    if (req.url.includes("/tokens/") && req.method === "DELETE") {
+      return { status: 200, body: { success: true, result: {} } };
     }
     if (req.url.endsWith("/tokens") && req.method === "POST") {
       return {
@@ -446,7 +490,7 @@ describe("provisionCloudflare", () => {
     );
 
     expect(result).toMatchObject({
-      status: "repaired",
+      status: "created",
       worker: { name: "demo-app" },
       preview_worker: { name: "demo-app-preview" },
     });
@@ -478,17 +522,11 @@ describe("provisionCloudflare", () => {
     );
 
     const mintBodies = requests
-      .filter((r) => r.url.includes("/tokens") && r.method === "POST")
+      .filter((r) => r.url.endsWith("/tokens") && r.method === "POST")
       .map((r) => r.body);
     expect(mintBodies).toHaveLength(2);
-    expect(mintBodies[0]).toMatchObject({
-      name: "project-factory-demo-app-deploy-preview",
-      policies: EXPECTED_CF_PREVIEW_TOKEN_POLICIES,
-    });
-    expect(mintBodies[1]).toMatchObject({
-      name: "project-factory-demo-app-deploy-production",
-      policies: EXPECTED_CF_PRODUCTION_TOKEN_POLICIES,
-    });
+    expect(mintBodies[0]).toEqual(EXPECTED_CF_PREVIEW_TOKEN_POST_BODY);
+    expect(mintBodies[1]).toEqual(EXPECTED_CF_PRODUCTION_TOKEN_POST_BODY);
 
     const mintAudit = logSpy.mock.calls
       .map((c) => String(c[0]))
@@ -509,6 +547,146 @@ describe("provisionCloudflare", () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain(MINTED_CF_TOKEN);
     expect(serialized).not.toContain(INSTALLATION_TOKEN);
+  });
+
+  it("fails closed with permission_denied when production environment GET returns 403", async () => {
+    const requests: RecordedRequest[] = [];
+    const workers = new Set<string>();
+    const state = defaultGithubState({
+      productionReview: {
+        reviewerId: REVIEWER_ID,
+        branchPolicies: ["main"],
+        verifyEnvironment403: true,
+      },
+      environments: ["preview", "production"],
+    });
+    const fetchImpl = buildFetch((req) => {
+      if (req.url.includes("api.github.com")) {
+        return githubHandlers(state, requests)(req);
+      }
+      return cloudflareHandlers(requests, workers)(req);
+    });
+
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-verify-403-env",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+
+    expect(result).toMatchObject({
+      error: {
+        code: "permission_denied",
+        message: "GET /repos/didi-build/demo-app/environments/production returned 403",
+        step: "verify_production_environment",
+      },
+    });
+    expect(state.productionSecrets).toHaveLength(0);
+  });
+
+  it("fails closed with permission_denied when deployment-branch-policies GET returns 403", async () => {
+    const requests: RecordedRequest[] = [];
+    const workers = new Set<string>();
+    const state = defaultGithubState({
+      productionReview: {
+        reviewerId: REVIEWER_ID,
+        branchPolicies: ["main"],
+        verifyBranchPolicies403: true,
+      },
+      environments: ["preview", "production"],
+    });
+    const fetchImpl = buildFetch((req) => {
+      if (req.url.includes("api.github.com")) {
+        return githubHandlers(state, requests)(req);
+      }
+      return cloudflareHandlers(requests, workers)(req);
+    });
+
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-verify-403-branches",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+
+    expect(result).toMatchObject({
+      error: {
+        code: "permission_denied",
+        message:
+          "GET /repos/didi-build/demo-app/environments/production/deployment-branch-policies returned 403",
+        step: "verify_production_environment",
+      },
+    });
+    expect(state.productionSecrets).toHaveLength(0);
+  });
+
+  it("revokes minted preview token when GitHub secret PUT fails", async () => {
+    const requests: RecordedRequest[] = [];
+    const workers = new Set<string>();
+    const state = defaultGithubState({
+      productionReview: {
+        reviewerId: null,
+        branchPolicies: [],
+        failPreviewSecretPut: true,
+      },
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchImpl = buildFetch((req) => {
+      if (req.url.includes("api.github.com")) {
+        return githubHandlers(state, requests)(req);
+      }
+      return cloudflareHandlers(requests, workers)(req);
+    });
+
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-revoke",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+
+    expect(result).toMatchObject({ error: { step: "put_preview_secret" } });
+    const deleted = requests.filter(
+      (r) => r.method === "DELETE" && r.url.includes("/tokens/cf-token-id-1"),
+    );
+    expect(deleted).toHaveLength(1);
+    const revokeAudit = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes('"event":"token_revoke"'));
+    expect(revokeAudit).toHaveLength(1);
   });
 
   it("fails closed when production environment read-back does not match", async () => {

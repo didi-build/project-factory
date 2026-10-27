@@ -39,3 +39,19 @@ export function writeTokenMintAudit(entry: TokenMintAuditInput): void {
     }),
   );
 }
+
+export type TokenRevokeAuditInput = {
+  request_id: string;
+  token_name: string;
+  token_id: string;
+  reason: string;
+};
+
+export function writeTokenRevokeAudit(entry: TokenRevokeAuditInput): void {
+  console.log(
+    JSON.stringify({
+      event: "token_revoke",
+      ...entry,
+    }),
+  );
+}

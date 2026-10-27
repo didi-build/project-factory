@@ -181,24 +181,26 @@ export async function buildProvisionCloudflareDryRunPlan(
             github.repo_exists === true && github.factory_owned === false;
         }
 
-        const secrets = await installationGet(
-          token,
-          `/repos/${repoFull}/actions/secrets`,
-          fetchImpl,
-        );
-        if (secrets.ok && secrets.data && typeof secrets.data === "object") {
-          const names = (
-            (secrets.data as { secrets?: { name: string }[] }).secrets ?? []
-          ).map((s) => s.name);
-          github.repo_secret_names = names.sort();
-          repoSecretsSet = names.filter((n) =>
-            [
-              REPO_SECRET_CLOUDFLARE_API_TOKEN_PREVIEW,
-              REPO_SECRET_CLOUDFLARE_ACCOUNT_ID,
-            ].includes(n),
+        if (github.factory_owned) {
+          const secrets = await installationGet(
+            token,
+            `/repos/${repoFull}/actions/secrets`,
+            fetchImpl,
           );
-        } else if (!secrets.ok) {
-          warnings.push(`GET repo secrets failed: ${secrets.message}`);
+          if (secrets.ok && secrets.data && typeof secrets.data === "object") {
+            const names = (
+              (secrets.data as { secrets?: { name: string }[] }).secrets ?? []
+            ).map((s) => s.name);
+            github.repo_secret_names = names.sort();
+            repoSecretsSet = names.filter((n) =>
+              [
+                REPO_SECRET_CLOUDFLARE_API_TOKEN_PREVIEW,
+                REPO_SECRET_CLOUDFLARE_ACCOUNT_ID,
+              ].includes(n),
+            );
+          } else if (!secrets.ok) {
+            warnings.push(`GET repo secrets failed: ${secrets.message}`);
+          }
         }
 
         const envs = await installationGet(
@@ -215,29 +217,31 @@ export async function buildProvisionCloudflareDryRunPlan(
           warnings.push(`GET environments failed: ${envs.message}`);
         }
 
-        const prodSecrets = await installationGet(
-          token,
-          `/repos/${repoFull}/environments/${GITHUB_ENV_PRODUCTION}/secrets`,
-          fetchImpl,
-        );
-        if (
-          prodSecrets.ok &&
-          prodSecrets.data &&
-          typeof prodSecrets.data === "object"
-        ) {
-          const names = (
-            (prodSecrets.data as { secrets?: { name: string }[] }).secrets ?? []
-          ).map((s) => s.name);
-          github.production_environment_secret_names = names.sort();
-          environmentSecretsSet = names.filter(
-            (n) => n === ENV_SECRET_CLOUDFLARE_API_TOKEN_PRODUCTION,
+        if (github.factory_owned) {
+          const prodSecrets = await installationGet(
+            token,
+            `/repos/${repoFull}/environments/${GITHUB_ENV_PRODUCTION}/secrets`,
+            fetchImpl,
           );
-        } else if (!prodSecrets.ok && prodSecrets.status === 404) {
-          github.production_environment_secret_names = [];
-        } else if (!prodSecrets.ok) {
-          warnings.push(
-            `GET production environment secrets failed: ${prodSecrets.message}`,
-          );
+          if (
+            prodSecrets.ok &&
+            prodSecrets.data &&
+            typeof prodSecrets.data === "object"
+          ) {
+            const names = (
+              (prodSecrets.data as { secrets?: { name: string }[] }).secrets ?? []
+            ).map((s) => s.name);
+            github.production_environment_secret_names = names.sort();
+            environmentSecretsSet = names.filter(
+              (n) => n === ENV_SECRET_CLOUDFLARE_API_TOKEN_PRODUCTION,
+            );
+          } else if (!prodSecrets.ok && prodSecrets.status === 404) {
+            github.production_environment_secret_names = [];
+          } else if (!prodSecrets.ok) {
+            warnings.push(
+              `GET production environment secrets failed: ${prodSecrets.message}`,
+            );
+          }
         }
       }
     }

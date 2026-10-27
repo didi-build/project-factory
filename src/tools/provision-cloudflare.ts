@@ -1,6 +1,10 @@
 import { CloudflareFactoryClient } from "../cloudflare/client.js";
 import type { ProjectFactoryEnv } from "../env.js";
-import { writeAuditEntry, writeTokenMintAudit } from "../factory/audit.js";
+import {
+  writeAuditEntry,
+  writeTokenMintAudit,
+  writeTokenRevokeAudit,
+} from "../factory/audit.js";
 import { FACTORY_TOPIC } from "../factory/constants.js";
 import {
   deployTokenName,
@@ -251,7 +255,6 @@ export async function provisionCloudflare(
     }
     const accountId = accountResult.accountId;
 
-    let repaired = false;
     let created = false;
 
     for (const [stepId, workerName] of [
@@ -287,7 +290,7 @@ export async function provisionCloudflare(
       return previewEnv.error;
     }
     if (previewEnv.created) {
-      repaired = true;
+      created = true;
       steps.push({
         id: "github_environment_preview",
         status: "done",
@@ -312,7 +315,7 @@ export async function provisionCloudflare(
       return productionEnv.error;
     }
     if (productionEnv.created) {
-      repaired = true;
+      created = true;
       steps.push({
         id: "github_environment_production",
         status: "done",
@@ -389,7 +392,7 @@ export async function provisionCloudflare(
         return put.error;
       }
       repoSecretsSet.push(REPO_SECRET_CLOUDFLARE_ACCOUNT_ID);
-      repaired = true;
+      created = true;
       steps.push({
         id: "secret_CLOUDFLARE_ACCOUNT_ID",
         status: "done",
@@ -405,9 +408,11 @@ export async function provisionCloudflare(
     }
 
     if (!previewSecretExists.exists) {
+      const previewTokenName = deployTokenName(input.name, "preview");
       const mint = await cloudflare.mintWorkerDeployToken(
         prevWorker,
-        deployTokenName(input.name, "preview"),
+        previewTokenName,
+        "preview",
       );
       if (!mint.ok) {
         auditStatus = mint.error.error.code;
@@ -416,7 +421,7 @@ export async function provisionCloudflare(
       }
       writeTokenMintAudit({
         request_id: ctx.requestId,
-        token_name: deployTokenName(input.name, "preview"),
+        token_name: previewTokenName,
         token_id: mint.tokenId,
       });
       const put = await putRepoSecret(
@@ -426,12 +431,22 @@ export async function provisionCloudflare(
         mint.tokenValue,
       );
       if (!put.ok) {
+        const revoked = await cloudflare.revokeDeployToken(mint.tokenId);
+        if (revoked.ok) {
+          writeTokenRevokeAudit({
+            request_id: ctx.requestId,
+            token_name: previewTokenName,
+            token_id: mint.tokenId,
+            reason: "put_preview_secret_failed",
+          });
+        }
         auditStatus = put.error.error.code;
         failedStep = "put_preview_secret";
-        return put.error;
+        return {
+          error: { ...put.error.error, step: "put_preview_secret" },
+        };
       }
       created = true;
-      repaired = true;
       repoSecretsSet.push(REPO_SECRET_CLOUDFLARE_API_TOKEN_PREVIEW);
       steps.push({
         id: "secret_CLOUDFLARE_API_TOKEN_PREVIEW",
@@ -448,9 +463,11 @@ export async function provisionCloudflare(
     }
 
     if (!productionSecretExists.exists) {
+      const productionTokenName = deployTokenName(input.name, "production");
       const mint = await cloudflare.mintWorkerDeployToken(
         prodWorker,
-        deployTokenName(input.name, "production"),
+        productionTokenName,
+        "production",
       );
       if (!mint.ok) {
         auditStatus = mint.error.error.code;
@@ -459,7 +476,7 @@ export async function provisionCloudflare(
       }
       writeTokenMintAudit({
         request_id: ctx.requestId,
-        token_name: deployTokenName(input.name, "production"),
+        token_name: productionTokenName,
         token_id: mint.tokenId,
       });
       const put = await putEnvironmentSecret(
@@ -470,12 +487,22 @@ export async function provisionCloudflare(
         mint.tokenValue,
       );
       if (!put.ok) {
+        const revoked = await cloudflare.revokeDeployToken(mint.tokenId);
+        if (revoked.ok) {
+          writeTokenRevokeAudit({
+            request_id: ctx.requestId,
+            token_name: productionTokenName,
+            token_id: mint.tokenId,
+            reason: "put_production_secret_failed",
+          });
+        }
         auditStatus = put.error.error.code;
         failedStep = "put_production_secret";
-        return put.error;
+        return {
+          error: { ...put.error.error, step: "put_production_secret" },
+        };
       }
       created = true;
-      repaired = true;
       environmentSecretsSet.push(ENV_SECRET_CLOUDFLARE_API_TOKEN_PRODUCTION);
       steps.push({
         id: "secret_CLOUDFLARE_API_TOKEN_PRODUCTION",
@@ -491,16 +518,7 @@ export async function provisionCloudflare(
       });
     }
 
-    let status: string;
-    if (created && !repaired) {
-      status = "created";
-    } else if (repaired && !created) {
-      status = "repaired";
-    } else if (created || repaired) {
-      status = "repaired";
-    } else {
-      status = "exists";
-    }
+    const status = created ? "created" : "exists";
 
     auditStatus = status;
     return {

@@ -13,6 +13,36 @@ export type ProductionEnvironmentPutBody = {
   };
 };
 
+export type DeploymentBranchPolicyItem = {
+  name: string;
+  type?: string;
+};
+
+/** Shape of GET /repos/{owner}/{repo}/environments/{environment_name} (GitHub REST). */
+export type GithubEnvironmentGetResponse = {
+  name?: string;
+  deployment_branch_policy?: {
+    protected_branches?: boolean;
+    custom_branch_policies?: boolean;
+  };
+  protection_rules?: {
+    id?: number;
+    type?: string;
+    reviewers?: {
+      type?: string;
+      id?: number;
+      reviewer?: { id?: number; login?: string };
+    }[];
+  }[];
+};
+
+export type ProductionVerifyFailure =
+  | "reviewer_missing"
+  | "wrong_reviewer"
+  | "branch_policy_disabled"
+  | "branch_policy_not_main_only"
+  | "branch_policy_wrong_type";
+
 export function buildProductionEnvironmentPutBody(
   reviewerUserId: number,
 ): ProductionEnvironmentPutBody {
@@ -25,13 +55,116 @@ export function buildProductionEnvironmentPutBody(
   };
 }
 
+export function verifyProductionEnvironmentConfig(
+  envData: GithubEnvironmentGetResponse,
+  branchPolicies: DeploymentBranchPolicyItem[],
+  expectedReviewerUserId: number,
+): { ok: true } | { ok: false; reason: ProductionVerifyFailure } {
+  const rules = envData.protection_rules ?? [];
+  const reviewerRule = rules.find((r) => r.type === "required_reviewers");
+  const reviewers = reviewerRule?.reviewers ?? [];
+  const hasReviewer = reviewers.some((r) => {
+    const id = r.id ?? r.reviewer?.id;
+    return r.type === "User" && id === expectedReviewerUserId;
+  });
+  if (!reviewerRule || reviewers.length === 0) {
+    return { ok: false, reason: "reviewer_missing" };
+  }
+  if (!hasReviewer) {
+    return { ok: false, reason: "wrong_reviewer" };
+  }
+
+  const policy = envData.deployment_branch_policy;
+  if (policy?.custom_branch_policies !== true || policy?.protected_branches !== false) {
+    return { ok: false, reason: "branch_policy_disabled" };
+  }
+
+  if (branchPolicies.length !== 1) {
+    return { ok: false, reason: "branch_policy_not_main_only" };
+  }
+  const only = branchPolicies[0];
+  if (only.type !== "branch" || only.name !== "main") {
+    return { ok: false, reason: "branch_policy_wrong_type" };
+  }
+
+  return { ok: true };
+}
+
+function verifyPermissionDeniedGet(
+  repoFull: string,
+  pathSuffix: string,
+  status: number,
+): { ok: false; error: ReturnType<typeof mapGithubFailure> } | null {
+  if (status !== 403) {
+    return null;
+  }
+  const path = `/repos/${repoFull}${pathSuffix}`;
+  return {
+    ok: false,
+    error: {
+      error: {
+        code: "permission_denied",
+        message: `GET ${path} returned 403`,
+        step: "verify_production_environment",
+        retryable: false,
+      },
+    },
+  };
+}
+
+async function listDeploymentBranchPolicies(
+  github: GitHubClient,
+  repoFull: string,
+  environment: string,
+): Promise<
+  | { ok: true; policies: DeploymentBranchPolicyItem[] }
+  | { ok: false; error: ReturnType<typeof mapGithubFailure> }
+> {
+  const policies: DeploymentBranchPolicyItem[] = [];
+  let page = 1;
+  while (true) {
+    const result = await github.request(
+      "GET",
+      `/repos/${repoFull}/environments/${environment}/deployment-branch-policies?per_page=100&page=${page}`,
+    );
+    if (!result.ok) {
+      const denied = verifyPermissionDeniedGet(
+        repoFull,
+        `/environments/${environment}/deployment-branch-policies`,
+        result.error.status,
+      );
+      if (denied) {
+        return denied;
+      }
+      return {
+        ok: false,
+        error: mapGithubFailure(result.error, "verify_production_environment"),
+      };
+    }
+    const chunk =
+      result.data && typeof result.data === "object"
+        ? ((result.data as { branch_policies?: DeploymentBranchPolicyItem[] })
+            .branch_policies ??
+          (result.data as { deployment_branch_policies?: DeploymentBranchPolicyItem[] })
+            .deployment_branch_policies ??
+          [])
+        : [];
+    policies.push(...chunk);
+    if (chunk.length < 100) {
+      break;
+    }
+    page += 1;
+  }
+  return { ok: true, policies };
+}
+
 export async function resolveGithubUserId(
   github: GitHubClient,
   login: string,
 ): Promise<
   { ok: true; id: number } | { ok: false; error: ReturnType<typeof mapGithubFailure> }
 > {
-  const result = await github.request("GET", `/users/${login}`);
+  const result = await github.request("GET", `/users/${encodeURIComponent(login)}`);
   if (!result.ok) {
     return { ok: false, error: mapGithubFailure(result.error, "resolve_reviewer") };
   }
@@ -110,7 +243,7 @@ export async function ensureProductionGithubEnvironment(
   const branchPolicy = await github.request(
     "POST",
     `/repos/${repoFull}/environments/${GITHUB_ENV_PRODUCTION}/deployment-branch-policies`,
-    { name: "main" },
+    { name: "main", type: "branch" },
   );
   if (!branchPolicy.ok && branchPolicy.error.status !== 422) {
     return {
@@ -122,18 +255,6 @@ export async function ensureProductionGithubEnvironment(
   return { ok: true, created: !existedBefore, putBody };
 }
 
-type GithubEnvironmentPayload = {
-  reviewers?: {
-    type?: string;
-    id?: number;
-    reviewer?: { id?: number; login?: string };
-  }[];
-  deployment_branch_policy?: {
-    protected_branches?: boolean;
-    custom_branch_policies?: boolean;
-  };
-};
-
 export async function verifyProductionGithubEnvironment(
   github: GitHubClient,
   repoFull: string,
@@ -144,50 +265,51 @@ export async function verifyProductionGithubEnvironment(
     `/repos/${repoFull}/environments/${GITHUB_ENV_PRODUCTION}`,
   );
   if (!env.ok) {
+    const denied = verifyPermissionDeniedGet(
+      repoFull,
+      `/environments/${GITHUB_ENV_PRODUCTION}`,
+      env.error.status,
+    );
+    if (denied) {
+      return denied;
+    }
     return {
       ok: false,
       error: mapGithubFailure(env.error, "verify_production_environment"),
     };
   }
-  const data = env.data as GithubEnvironmentPayload;
-  const reviewers = data.reviewers ?? [];
-  const hasReviewer = reviewers.some((r) => {
-    const id = r.id ?? r.reviewer?.id;
-    return r.type === "User" && id === reviewerUserId;
-  });
-  const policy = data.deployment_branch_policy;
-  const policyOk =
-    policy?.custom_branch_policies === true && policy?.protected_branches === false;
 
-  const branches = await github.request(
-    "GET",
-    `/repos/${repoFull}/environments/${GITHUB_ENV_PRODUCTION}/deployment-branch-policies`,
+  const branches = await listDeploymentBranchPolicies(
+    github,
+    repoFull,
+    GITHUB_ENV_PRODUCTION,
   );
   if (!branches.ok) {
-    return {
-      ok: false,
-      error: mapGithubFailure(branches.error, "verify_production_environment"),
-    };
+    return branches;
   }
-  const branchNames =
-    branches.data && typeof branches.data === "object"
-      ? (
-          (branches.data as { branch_policies?: { name: string }[] }).branch_policies ??
-          (branches.data as { deployment_branch_policies?: { name: string }[] })
-            .deployment_branch_policies ??
-          []
-        ).map((b) => b.name)
-      : [];
-  const mainOnly = branchNames.length === 1 && branchNames[0] === "main";
 
-  if (!hasReviewer || !policyOk || !mainOnly) {
+  const verified = verifyProductionEnvironmentConfig(
+    env.data as GithubEnvironmentGetResponse,
+    branches.policies,
+    reviewerUserId,
+  );
+  if (!verified.ok) {
+    const messages: Record<ProductionVerifyFailure, string> = {
+      reviewer_missing: "production environment missing required reviewer",
+      wrong_reviewer: "production environment has wrong required reviewer",
+      branch_policy_disabled:
+        "production environment deployment branch policy is not enabled for custom branches",
+      branch_policy_not_main_only:
+        "production environment must allow exactly one deployment branch (main)",
+      branch_policy_wrong_type:
+        "production environment deployment branch policy must be type branch named main",
+    };
     return {
       ok: false,
       error: {
         error: {
           code: "upstream_error",
-          message:
-            "production environment missing required reviewer, branch policy, or main-only deployment rule",
+          message: messages[verified.reason],
           step: "verify_production_environment",
           retryable: false,
         },
@@ -204,15 +326,27 @@ export async function listEnvironmentNames(
   | { ok: true; names: string[] }
   | { ok: false; error: ReturnType<typeof mapGithubFailure> }
 > {
-  const result = await github.request("GET", `/repos/${repoFull}/environments`);
-  if (!result.ok) {
-    return { ok: false, error: mapGithubFailure(result.error, "list_environments") };
+  const names: string[] = [];
+  let page = 1;
+  while (true) {
+    const result = await github.request(
+      "GET",
+      `/repos/${repoFull}/environments?per_page=100&page=${page}`,
+    );
+    if (!result.ok) {
+      return { ok: false, error: mapGithubFailure(result.error, "list_environments") };
+    }
+    const envs =
+      result.data && typeof result.data === "object"
+        ? ((result.data as { environments?: { name: string }[] }).environments ?? [])
+        : [];
+    names.push(...envs.map((e) => e.name));
+    if (envs.length < 100) {
+      break;
+    }
+    page += 1;
   }
-  const envs =
-    result.data && typeof result.data === "object"
-      ? ((result.data as { environments?: { name: string }[] }).environments ?? [])
-      : [];
-  return { ok: true, names: envs.map((e) => e.name).sort() };
+  return { ok: true, names: names.sort() };
 }
 
 export { GITHUB_ENV_PREVIEW, GITHUB_ENV_PRODUCTION };
