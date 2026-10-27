@@ -229,6 +229,22 @@ function seedBootstrapInitFixture(dir: string, realGit: string) {
   return gitEnv;
 }
 
+function envWithoutInheritedGitConfig(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const out = { ...env };
+  for (const key of Object.keys(out)) {
+    if (
+      key === "GIT_CONFIG_COUNT" ||
+      key.startsWith("GIT_CONFIG_KEY_") ||
+      key.startsWith("GIT_CONFIG_VALUE_")
+    ) {
+      delete out[key];
+    }
+  }
+  return out;
+}
+
 function runBootstrapInitWithStubs(
   dir: string,
   realGit: string,
@@ -243,7 +259,7 @@ function runBootstrapInitWithStubs(
   const result = spawnSync(process.execPath, [bootstrapScript, "run"], {
     cwd: dir,
     encoding: "utf8",
-    env: {
+    env: envWithoutInheritedGitConfig({
       ...process.env,
       ...hermeticEnv,
       PATH: pathPrefix,
@@ -261,7 +277,7 @@ function runBootstrapInitWithStubs(
       BOOTSTRAP_TOKEN: FAKE_TOKEN,
       GH_TOKEN: FAKE_TOKEN,
       GITHUB_TOKEN: "actions-default-token",
-    },
+    }),
   });
 
   const logText = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
