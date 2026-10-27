@@ -56,7 +56,7 @@ export function createFactoryMcpServer(
         summary: z.string().min(1),
         idea_issue: z.string().optional(),
         approval_ref: z.string().min(1),
-        dry_run: z.boolean().optional(),
+        dry_run: z.boolean().optional().default(true),
       },
     },
     async (input) => {

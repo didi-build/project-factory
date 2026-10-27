@@ -16,7 +16,10 @@ import {
 import { LinearClient } from "../linear/client.js";
 import { mapLinearFailure } from "../linear/linear-errors.js";
 import { discoverFactoryProject } from "../linear/discover-factory-project.js";
-import { detectRepoLabelConflict } from "../linear/ownership.js";
+import {
+  detectAmbiguousKickoffEpicLookup,
+  detectRepoLabelConflict,
+} from "../linear/ownership.js";
 import {
   COMMENT_CREATE_MUTATION,
   ENTITY_EXTERNAL_LINK_CREATE_MUTATION,
@@ -444,6 +447,17 @@ export async function createLinearProject(
       auditStatus = kickoffRead.error.error.code;
       failedStep = kickoffRead.step;
       return kickoffRead.error;
+    }
+
+    const ambiguousKickoff = detectAmbiguousKickoffEpicLookup(kickoffRead.issues);
+    if (ambiguousKickoff) {
+      auditStatus = ambiguousKickoff.code;
+      failedStep = ambiguousKickoff.step;
+      return factoryError(
+        ambiguousKickoff.code,
+        ambiguousKickoff.message,
+        ambiguousKickoff.step,
+      );
     }
 
     let kickoff = kickoffRead.issues[0];

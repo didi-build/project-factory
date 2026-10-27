@@ -168,6 +168,52 @@ describe("LinearClient", () => {
     }
   });
 
+  it("maps FORBIDDEN extension code to permission_denied", async () => {
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () =>
+        jsonResponse(400, {
+          errors: [
+            {
+              message: "Not allowed to perform action",
+              extensions: { code: "FORBIDDEN" },
+            },
+          ],
+        }),
+    });
+    const result = await client.request("query Teams { teams { nodes { id } } }");
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "permission_denied" },
+    });
+    if (!result.ok) {
+      expect(result.error.message).not.toContain("Not allowed");
+    }
+  });
+
+  it("maps NOT_AUTHORIZED extension code to permission_denied", async () => {
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () =>
+        jsonResponse(400, {
+          errors: [
+            {
+              message: "Actor not authorized",
+              extensions: { code: "NOT_AUTHORIZED" },
+            },
+          ],
+        }),
+    });
+    const result = await client.request("query Teams { teams { nodes { id } } }");
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "permission_denied" },
+    });
+    if (!result.ok) {
+      expect(result.error.message).not.toContain("Actor not authorized");
+    }
+  });
+
   it("maps HTTP 403 to permission_denied", async () => {
     const client = new LinearClient({
       apiKey: buildLinearApiKey(),

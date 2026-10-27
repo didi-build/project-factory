@@ -87,6 +87,22 @@ function auditLine(logSpy: ReturnType<typeof vi.spyOn>, requestId: string) {
 }
 
 describe("createLinearProject", () => {
+  it("defaults dry_run to true when omitted from handler input", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient({}, calls);
+    const result = await createLinearProject(
+      { env, requestId: "dry-default", caller: "test", linear },
+      {
+        name: baseInput.name,
+        display_name: baseInput.display_name,
+        summary: baseInput.summary,
+        approval_ref: baseInput.approval_ref,
+      },
+    );
+    expect(result).toMatchObject({ status: "planned", dry_run: true });
+    expect(mutationCalls(calls)).toHaveLength(0);
+  });
+
   it("dry_run performs reads only (no mutations)", async () => {
     const calls: GraphqlCall[] = [];
     const linear = createHarnessClient({}, calls);
@@ -625,45 +641,124 @@ describe("createLinearProject", () => {
     expect(calls.some((c) => c.query.includes("IssueRelationCreate"))).toBe(true);
   });
 
+  it("does not leak raw upstream Linear error text in tool results", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      { labelExists: true, failRead: "WorkflowStates" },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "no-raw-upstream", caller: "test", linear },
+      baseInput,
+    );
+    const raw = "LINEAR_RAW_UPSTREAM_DO_NOT_LEAK_99441";
+    expect(JSON.stringify(result)).not.toContain(raw);
+    expect(result).toMatchObject({ error: { code: "upstream_error" } });
+  });
+
+  it("returns conflict with zero writes when multiple kickoff epics share the marker", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      { labelExists: true, projectExists: true, kickoffDuplicateMarkers: true },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "kickoff-dup-write", caller: "test", linear },
+      baseInput,
+    );
+    expect(result).toMatchObject({
+      error: { code: "conflict_not_factory_owned", step: "read_kickoff_epic" },
+    });
+    expect(resourceMutationCalls(calls)).toHaveLength(0);
+  });
+
+  it("dry_run returns conflict when multiple kickoff epics share the marker", async () => {
+    const linear = createHarnessClient({
+      labelExists: true,
+      projectExists: true,
+      kickoffDuplicateMarkers: true,
+    });
+    const result = await createLinearProject(
+      { env, requestId: "kickoff-dup-dry", caller: "test", linear },
+      { ...baseInput, dry_run: true },
+    );
+    expect(result).toMatchObject({ status: "conflict", dry_run: true });
+  });
+
   const dryRunReadFailures: {
     failRead: string;
     step: string;
     warning: string;
     state?: HarnessState;
+    discovery: {
+      project_exists?: null;
+      kickoff_epic_exists?: null;
+      factory_owned?: null;
+      repo_label_exists?: null;
+      idea_issue_found?: null;
+    };
   }[] = [
-    { failRead: "query Teams", step: "read_linear_team", warning: "team read failed" },
+    {
+      failRead: "query Teams",
+      step: "read_linear_team",
+      warning: "team read failed",
+      discovery: {
+        repo_label_exists: null,
+        project_exists: null,
+        factory_owned: null,
+        kickoff_epic_exists: null,
+      },
+    },
     {
       failRead: "projectLabels",
       step: "read_project_labels",
       warning: "project label read failed",
+      discovery: {
+        repo_label_exists: null,
+        project_exists: null,
+        factory_owned: null,
+        kickoff_epic_exists: null,
+      },
     },
     {
       failRead: "ProjectsByLabel",
       step: "read_project_by_label",
       warning: "project read by label failed",
       state: { labelExists: true },
+      discovery: {
+        factory_owned: null,
+        kickoff_epic_exists: null,
+      },
     },
     {
       failRead: "ProjectsByName",
       step: "read_project_by_name",
       warning: "project read by name failed",
+      discovery: {
+        project_exists: null,
+        factory_owned: null,
+        kickoff_epic_exists: null,
+      },
     },
     {
       failRead: "KickoffByMarker",
       step: "read_kickoff_epic",
       warning: "kickoff epic read failed",
       state: { labelExists: true, projectExists: true },
+      discovery: { kickoff_epic_exists: null },
     },
     {
       failRead: "WorkflowStates",
       step: "read_workflow_state",
       warning: "workflow state read failed",
+      discovery: { kickoff_epic_exists: null },
     },
     {
       failRead: "IssueById",
       step: "read_idea_issue",
       warning: "idea issue read failed",
       state: { labelExists: true, projectExists: true, ideaIssue: true },
+      discovery: { idea_issue_found: null },
     },
   ];
 
@@ -686,9 +781,10 @@ describe("createLinearProject", () => {
           ...(scenario.step === "read_idea_issue" ? { idea_issue: "DIDI-830" } : {}),
         },
       );
-      const planned = result as {
+      const planned = result as unknown as {
         warnings: string[];
         steps: { id: string; status: string }[];
+        linear: Record<string, unknown>;
       };
       expect(
         planned.warnings.some((w) => w.toLowerCase().includes(scenario.warning)),
@@ -696,6 +792,9 @@ describe("createLinearProject", () => {
       expect(
         planned.steps.some((s) => s.id === scenario.step && s.status === "failed"),
       ).toBe(true);
+      for (const [field, value] of Object.entries(scenario.discovery)) {
+        expect(planned.linear[field]).toBe(value);
+      }
     });
   }
 
@@ -706,11 +805,22 @@ describe("createLinearProject", () => {
         _registeredTools: {
           create_linear_project: {
             executor: (input: Record<string, unknown>) => Promise<unknown>;
+            inputSchema: {
+              parse: (input: Record<string, unknown>) => { dry_run: boolean };
+            };
           };
         };
       }
     )._registeredTools.create_linear_project;
     expect(tool).toBeDefined();
+
+    const parsed = tool.inputSchema.parse({
+      name: "demo-app",
+      display_name: "Demo App",
+      summary: "A demo",
+      approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+    });
+    expect(parsed.dry_run).toBe(true);
 
     const spy = vi
       .spyOn(createLinearProjectModule, "createLinearProject")

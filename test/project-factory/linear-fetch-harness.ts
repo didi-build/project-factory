@@ -24,6 +24,8 @@ export type HarnessState = {
   projectsByLabelNodes?: HarnessProjectNode[];
   projectsByNameNodes?: HarnessProjectNode[];
   kickoffExists?: boolean;
+  /** Return two kickoff issues with the same epic marker. */
+  kickoffDuplicateMarkers?: boolean;
   kickoffStateId?: string;
   ideaIssue?: boolean;
   ideaHasRelationToKickoff?: boolean;
@@ -107,7 +109,10 @@ export function createHarnessClient(
         return new Response(
           JSON.stringify({
             errors: [
-              { message: "read failed", extensions: { code: "INTERNAL_ERROR" } },
+              {
+                message: "LINEAR_RAW_UPSTREAM_DO_NOT_LEAK_99441",
+                extensions: { code: "INTERNAL_ERROR" },
+              },
             ],
           }),
           { status: 502 },
@@ -170,6 +175,37 @@ export function createHarnessClient(
         );
       }
       if (q.includes("KickoffByMarker")) {
+        if (state.kickoffDuplicateMarkers) {
+          const marker = `<!-- project-factory:epic:${PROJECT_ID} -->`;
+          return new Response(
+            JSON.stringify({
+              data: {
+                issues: {
+                  nodes: [
+                    {
+                      id: KICKOFF_ID,
+                      identifier: "DIDI-900",
+                      title: "Kickoff A",
+                      url: "https://linear.app/didi-build/issue/DIDI-900",
+                      description: marker,
+                      state: { id: STATE_ID, name: "Ready for CTO breakdown" },
+                      relations: { nodes: [] },
+                    },
+                    {
+                      id: "kickoff-dup-uuid",
+                      identifier: "DIDI-901",
+                      title: "Kickoff B",
+                      url: "https://linear.app/didi-build/issue/DIDI-901",
+                      description: marker,
+                      state: { id: STATE_ID, name: "Ready for CTO breakdown" },
+                      relations: { nodes: [] },
+                    },
+                  ],
+                },
+              },
+            }),
+          );
+        }
         if (state.kickoffExists) {
           return new Response(
             JSON.stringify({

@@ -1,6 +1,10 @@
 import { REPO_PROJECT_LABEL_GROUP_NAME } from "../factory/linear-constants.js";
 import { projectHasFactoryMarker } from "../factory/linear-content.js";
-import type { LinearProjectNode, ProjectLabelNode } from "./operations.js";
+import type {
+  LinearIssueNode,
+  LinearProjectNode,
+  ProjectLabelNode,
+} from "./operations.js";
 
 export type ProjectLookupStep = "read_project_by_label" | "read_project_by_name";
 
@@ -65,6 +69,25 @@ export function detectAmbiguousProjectLookup(
     code: "conflict_not_factory_owned",
     message: detail,
     step,
+  };
+}
+
+export type KickoffEpicConflict = {
+  code: "conflict_not_factory_owned";
+  message: string;
+  step: "read_kickoff_epic";
+} | null;
+
+export function detectAmbiguousKickoffEpicLookup(
+  issues: LinearIssueNode[],
+): KickoffEpicConflict {
+  if (issues.length <= 1) {
+    return null;
+  }
+  return {
+    code: "conflict_not_factory_owned",
+    message: "multiple kickoff epics share the project-factory epic marker",
+    step: "read_kickoff_epic",
   };
 }
 

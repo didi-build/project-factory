@@ -10,7 +10,11 @@ import {
   projectHasFactoryMarker,
 } from "../factory/linear-content.js";
 import { LinearClient } from "../linear/client.js";
-import { detectRepoLabelConflict, selectFactoryProject } from "../linear/ownership.js";
+import {
+  detectAmbiguousKickoffEpicLookup,
+  detectRepoLabelConflict,
+  selectFactoryProject,
+} from "../linear/ownership.js";
 import {
   findIssueByIdentifier,
   findKickoffEpicByMarker,
@@ -326,20 +330,31 @@ export async function buildCreateLinearProjectDryRunPlan(
         status: "failed",
         detail: kickoff.error.error.message,
       });
-    } else if (kickoff.issues[0]) {
-      linearDiscovery.kickoff_epic_exists = true;
-      kickoffEpic = {
-        identifier: kickoff.issues[0].identifier,
-        url: kickoff.issues[0].url,
-      };
-      steps.push({
-        id: "read_kickoff_epic",
-        status: "done",
-        detail: kickoff.issues[0].identifier,
-      });
     } else {
-      linearDiscovery.kickoff_epic_exists = false;
-      steps.push({ id: "read_kickoff_epic", status: "done", detail: "none" });
+      const ambiguousKickoff = detectAmbiguousKickoffEpicLookup(kickoff.issues);
+      if (ambiguousKickoff) {
+        planStatus = "conflict";
+        linearDiscovery.conflict = ambiguousKickoff.message;
+        steps.push({
+          id: "read_kickoff_epic",
+          status: "failed",
+          detail: ambiguousKickoff.message,
+        });
+      } else if (kickoff.issues[0]) {
+        linearDiscovery.kickoff_epic_exists = true;
+        kickoffEpic = {
+          identifier: kickoff.issues[0].identifier,
+          url: kickoff.issues[0].url,
+        };
+        steps.push({
+          id: "read_kickoff_epic",
+          status: "done",
+          detail: kickoff.issues[0].identifier,
+        });
+      } else {
+        linearDiscovery.kickoff_epic_exists = false;
+        steps.push({ id: "read_kickoff_epic", status: "done", detail: "none" });
+      }
     }
   }
 
