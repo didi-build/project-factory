@@ -33,7 +33,12 @@ export type HarnessState = {
   failMutation?: string;
   /** When set, queries containing this substring return HTTP 502. */
   failRead?: string;
+  /** When set, queries containing this substring return HTTP 200 with a GraphQL errors array. */
+  failGraphql200ErrorsOn?: string;
 };
+
+export const LINEAR_RAW_GRAPHQL_200_LEAK_MARKER =
+  "LINEAR_RAW_GRAPHQL_200_DO_NOT_LEAK_88421";
 
 const LABEL_ID = "label-demo-uuid";
 const PROJECT_ID = "project-demo-uuid";
@@ -104,6 +109,20 @@ export function createHarnessClient(
       const body = JSON.parse(String(init?.body)) as GraphqlCall;
       calls.push(body);
       const q = body.query;
+
+      if (state.failGraphql200ErrorsOn && q.includes(state.failGraphql200ErrorsOn)) {
+        return new Response(
+          JSON.stringify({
+            errors: [
+              {
+                message: LINEAR_RAW_GRAPHQL_200_LEAK_MARKER,
+                extensions: { code: "INTERNAL_ERROR" },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
 
       if (state.failRead && q.includes(state.failRead)) {
         return new Response(

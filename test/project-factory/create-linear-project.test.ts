@@ -9,6 +9,7 @@ import { createLinearProject } from "../../src/tools/create-linear-project.js";
 import {
   createHarnessClient,
   defaultHarnessProject,
+  LINEAR_RAW_GRAPHQL_200_LEAK_MARKER,
   mutationCalls,
   resourceMutationCalls,
   type GraphqlCall,
@@ -85,6 +86,79 @@ function auditLine(logSpy: ReturnType<typeof vi.spyOn>, requestId: string) {
     .map((c) => String(c[0]))
     .find((line) => line.includes("factory_call") && line.includes(requestId));
 }
+
+const validMcpLinearInput = {
+  name: "demo-app",
+  display_name: "Demo App",
+  summary: "A demo",
+  approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+};
+
+type McpCreateLinearProjectTool = {
+  executor: (
+    input: Record<string, unknown>,
+  ) => Promise<{ content: { text: string }[] }>;
+};
+
+function getCreateLinearProjectMcpTool(
+  server: ReturnType<typeof createFactoryMcpServer>,
+): McpCreateLinearProjectTool {
+  return (
+    server as unknown as {
+      _registeredTools: { create_linear_project: McpCreateLinearProjectTool };
+    }
+  )._registeredTools.create_linear_project;
+}
+
+async function runRegisteredMcpCreateLinearProject(
+  requestId: string,
+  input: Record<string, unknown>,
+  calls: GraphqlCall[],
+): Promise<{ content: { text: string }[] }> {
+  const linear = createHarnessClient({}, calls);
+  const spy = vi.spyOn(createLinearProjectModule, "createLinearProject");
+  spy.mockImplementation((ctx, toolInput) => {
+    expect(toolInput.dry_run).not.toBe(false);
+    spy.mockRestore();
+    return createLinearProjectModule.createLinearProject({ ...ctx, linear }, toolInput);
+  });
+  const server = createFactoryMcpServer(env, requestId, "mcp-dry-run-caller");
+  const tool = getCreateLinearProjectMcpTool(server);
+  const response = await tool.executor(input);
+  return response;
+}
+
+describe("createLinearProject MCP handler (create-server registration)", () => {
+  it("runs dry_run when dry_run is omitted from valid MCP input", async () => {
+    const calls: GraphqlCall[] = [];
+    const response = await runRegisteredMcpCreateLinearProject(
+      "mcp-omit-dry-run",
+      validMcpLinearInput,
+      calls,
+    );
+    const payload = JSON.parse(response.content[0].text) as {
+      status: string;
+      dry_run: boolean;
+    };
+    expect(payload).toMatchObject({ status: "planned", dry_run: true });
+    expect(mutationCalls(calls)).toHaveLength(0);
+  });
+
+  it("runs dry_run when dry_run is true on valid MCP input", async () => {
+    const calls: GraphqlCall[] = [];
+    const response = await runRegisteredMcpCreateLinearProject(
+      "mcp-explicit-dry-run",
+      { ...validMcpLinearInput, dry_run: true },
+      calls,
+    );
+    const payload = JSON.parse(response.content[0].text) as {
+      status: string;
+      dry_run: boolean;
+    };
+    expect(payload).toMatchObject({ status: "planned", dry_run: true });
+    expect(mutationCalls(calls)).toHaveLength(0);
+  });
+});
 
 describe("createLinearProject", () => {
   it("defaults dry_run to true when omitted from handler input", async () => {
@@ -639,6 +713,20 @@ describe("createLinearProject", () => {
       { ...baseInput, idea_issue: "DIDI-830" },
     );
     expect(calls.some((c) => c.query.includes("IssueRelationCreate"))).toBe(true);
+  });
+
+  it("does not leak raw upstream text from HTTP 200 GraphQL errors in tool results", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      { failGraphql200ErrorsOn: "query Teams" },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "no-raw-graphql-200", caller: "test", linear },
+      baseInput,
+    );
+    expect(JSON.stringify(result)).not.toContain(LINEAR_RAW_GRAPHQL_200_LEAK_MARKER);
+    expect(result).toMatchObject({ error: { code: "upstream_error" } });
   });
 
   it("does not leak raw upstream Linear error text in tool results", async () => {
