@@ -10,10 +10,7 @@ import {
   projectHasFactoryMarker,
 } from "../factory/linear-content.js";
 import { LinearClient } from "../linear/client.js";
-import {
-  detectForeignProjectConflict,
-  detectRepoLabelConflict,
-} from "../linear/ownership.js";
+import { detectRepoLabelConflict, selectFactoryProject } from "../linear/ownership.js";
 import {
   findIssueByIdentifier,
   findKickoffEpicByMarker,
@@ -22,6 +19,7 @@ import {
   listProjectLabels,
   resolveLinearTeamId,
   teamScopedProjectNameFilter,
+  type LinearProjectNode,
 } from "../linear/operations.js";
 import type { FactoryStep } from "./types.js";
 
@@ -43,7 +41,7 @@ export type CreateLinearProjectDryRunPlan = {
   dry_run: true;
   steps: FactoryStep[];
   warnings: string[];
-  project_url: string;
+  project_url: string | null;
   project_label: string;
   kickoff_epic: { identifier: string; url: string } | null;
   linear: LinearDryRunDiscovery;
@@ -106,7 +104,7 @@ export async function buildCreateLinearProjectDryRunPlan(
   };
 
   let kickoffEpic: { identifier: string; url: string } | null = null;
-  let projectUrl = "";
+  let projectUrl: string | null = null;
 
   if (!env.PROJECT_FACTORY_LINEAR_API_KEY) {
     warnings.push("PROJECT_FACTORY_LINEAR_API_KEY not set; skipped Linear reads");
@@ -235,6 +233,33 @@ export async function buildCreateLinearProjectDryRunPlan(
   }
 
   let projectId: string | undefined;
+
+  const applyProjectPick = (
+    project: LinearProjectNode | undefined,
+    conflict: ReturnType<typeof selectFactoryProject>["conflict"],
+    step: "read_project_by_label" | "read_project_by_name",
+    detail: string,
+  ) => {
+    if (conflict) {
+      planStatus = "conflict";
+      linearDiscovery.conflict = conflict.message;
+      steps.push({ id: step, status: "failed", detail: conflict.message });
+      return;
+    }
+    if (project) {
+      projectId = project.id;
+      projectUrl = project.url;
+      linearDiscovery.project_exists = true;
+      linearDiscovery.factory_owned = projectHasFactoryMarker(
+        project.description,
+        input.name,
+      );
+      steps.push({ id: step, status: "done", detail: project.name });
+      return;
+    }
+    steps.push({ id: step, status: "done", detail: detail });
+  };
+
   if (planStatus !== "conflict" && repoLabel) {
     const byLabel = await findProjects(
       linear,
@@ -250,30 +275,20 @@ export async function buildCreateLinearProjectDryRunPlan(
         status: "failed",
         detail: byLabel.error.error.message,
       });
-    } else if (byLabel.projects[0]) {
-      const project = byLabel.projects[0];
-      projectId = project.id;
-      projectUrl = project.url;
-      linearDiscovery.project_exists = true;
-      linearDiscovery.factory_owned = projectHasFactoryMarker(
-        project.description,
-        input.name,
-      );
-      const conflict = detectForeignProjectConflict(
-        project,
+    } else {
+      const pick = selectFactoryProject(
+        byLabel.projects,
         input.name,
         "read_project_by_label",
       );
-      if (conflict) {
-        planStatus = "conflict";
-        linearDiscovery.conflict = conflict.message;
+      if (!pick.project && !pick.conflict) {
+        linearDiscovery.project_exists = false;
       }
-      steps.push({ id: "read_project_by_label", status: "done", detail: project.name });
-    } else {
-      linearDiscovery.project_exists = false;
-      steps.push({ id: "read_project_by_label", status: "done", detail: "none" });
+      applyProjectPick(pick.project, pick.conflict, "read_project_by_label", "none");
     }
-  } else if (planStatus !== "conflict") {
+  }
+
+  if (planStatus !== "conflict" && !projectId) {
     const byName = await findProjects(
       linear,
       teamScopedProjectNameFilter(teamId, input.displayName),
@@ -288,28 +303,16 @@ export async function buildCreateLinearProjectDryRunPlan(
         status: "failed",
         detail: byName.error.error.message,
       });
-    } else if (byName.projects[0]) {
-      const project = byName.projects[0];
-      projectId = project.id;
-      projectUrl = project.url;
-      linearDiscovery.project_exists = true;
-      linearDiscovery.factory_owned = projectHasFactoryMarker(
-        project.description,
-        input.name,
-      );
-      const conflict = detectForeignProjectConflict(
-        project,
+    } else {
+      const pick = selectFactoryProject(
+        byName.projects,
         input.name,
         "read_project_by_name",
       );
-      if (conflict) {
-        planStatus = "conflict";
-        linearDiscovery.conflict = conflict.message;
+      if (!pick.project && !pick.conflict) {
+        linearDiscovery.project_exists = false;
       }
-      steps.push({ id: "read_project_by_name", status: "done", detail: project.name });
-    } else {
-      linearDiscovery.project_exists = false;
-      steps.push({ id: "read_project_by_name", status: "done", detail: "none" });
+      applyProjectPick(pick.project, pick.conflict, "read_project_by_name", "none");
     }
   }
 

@@ -15,10 +15,8 @@ import {
 } from "../factory/linear-content.js";
 import { LinearClient } from "../linear/client.js";
 import { mapLinearFailure } from "../linear/linear-errors.js";
-import {
-  detectForeignProjectConflict,
-  detectRepoLabelConflict,
-} from "../linear/ownership.js";
+import { discoverFactoryProject } from "../linear/discover-factory-project.js";
+import { detectRepoLabelConflict } from "../linear/ownership.js";
 import {
   COMMENT_CREATE_MUTATION,
   ENTITY_EXTERNAL_LINK_CREATE_MUTATION,
@@ -29,11 +27,9 @@ import {
   PROJECT_UPDATE_MUTATION,
   findIssueByIdentifier,
   findKickoffEpicByMarker,
-  findProjects,
   findWorkflowStateId,
   listProjectLabels,
   resolveLinearTeamId,
-  teamScopedProjectNameFilter,
   type LinearIssueNode,
   type LinearProjectNode,
 } from "../linear/operations.js";
@@ -291,55 +287,27 @@ export async function createLinearProject(
 
     let project: LinearProjectNode | undefined;
     let projectCreated = false;
-    const byLabel = await findProjects(
-      linearClient,
-      { labels: { id: { eq: repoLabel.id } } },
-      "read_project_by_label",
-    );
-    if (!byLabel.ok) {
-      auditStatus = byLabel.error.error.code;
-      failedStep = byLabel.step;
-      return byLabel.error;
-    }
-    if (byLabel.projects[0]) {
-      project = byLabel.projects[0];
-      const conflict = detectForeignProjectConflict(
-        project,
-        input.name,
-        "read_project_by_label",
-      );
-      if (conflict) {
-        auditStatus = conflict.code;
-        failedStep = conflict.step;
-        return factoryError(conflict.code, conflict.message, conflict.step);
-      }
-    }
-
-    if (!project) {
-      const byName = await findProjects(
-        linearClient,
-        teamScopedProjectNameFilter(teamId, displayName),
-        "read_project_by_name",
-      );
-      if (!byName.ok) {
-        auditStatus = byName.error.error.code;
-        failedStep = byName.step;
-        return byName.error;
-      }
-      if (byName.projects[0]) {
-        project = byName.projects[0];
-        const conflict = detectForeignProjectConflict(
-          project,
-          input.name,
-          "read_project_by_name",
+    const discovered = await discoverFactoryProject(linearClient, {
+      teamId,
+      displayName,
+      factoryName: input.name,
+      repoLabelId: repoLabel.id,
+    });
+    if (!discovered.ok) {
+      if (discovered.reason === "conflict") {
+        auditStatus = discovered.conflict.code;
+        failedStep = discovered.conflict.step;
+        return factoryError(
+          discovered.conflict.code,
+          discovered.conflict.message,
+          discovered.conflict.step,
         );
-        if (conflict) {
-          auditStatus = conflict.code;
-          failedStep = conflict.step;
-          return factoryError(conflict.code, conflict.message, conflict.step);
-        }
       }
+      auditStatus = discovered.readError.error.code;
+      failedStep = discovered.step;
+      return discovered.readError;
     }
+    project = discovered.project;
 
     if (!project) {
       const createProject = await linearClient.request<{
@@ -380,10 +348,10 @@ export async function createLinearProject(
       steps.push({ id: "linear_project", status: "skipped", detail: project.url });
       const labelIds = project.labels?.nodes.map((l) => l.id) ?? [];
       const needsLabel = !labelIds.includes(repoLabel.id);
-      const needsDescription =
+      const needsDescriptionRepair =
         !project.description ||
         !projectHasFactoryMarker(project.description, input.name);
-      if (needsLabel || needsDescription) {
+      if (needsLabel || needsDescriptionRepair) {
         const updateDesc = validateProjectDescriptionLength({
           summary,
           name: input.name,
@@ -399,7 +367,7 @@ export async function createLinearProject(
           id: project.id,
           input: {
             ...(needsLabel ? { labelIds: [...labelIds, repoLabel.id] } : {}),
-            ...(needsDescription ? { description: updateDesc.description } : {}),
+            ...(needsDescriptionRepair ? { description: updateDesc.description } : {}),
           },
         });
         if (!update.ok) {

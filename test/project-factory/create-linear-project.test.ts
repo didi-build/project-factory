@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
+import { validateProjectDescriptionLength } from "../../src/factory/linear-content.js";
 import { LinearClient } from "../../src/linear/client.js";
 import { detectRepoLabelConflict } from "../../src/linear/ownership.js";
 import { createFactoryMcpServer } from "../../src/mcp/create-server.js";
+import * as createLinearProjectModule from "../../src/tools/create-linear-project.js";
 import { createLinearProject } from "../../src/tools/create-linear-project.js";
 import {
   createHarnessClient,
+  defaultHarnessProject,
   mutationCalls,
   resourceMutationCalls,
   type GraphqlCall,
+  type HarnessState,
 } from "./linear-fetch-harness.js";
 import { buildLinearApiKey } from "./linear-mock.js";
 
@@ -90,8 +94,19 @@ describe("createLinearProject", () => {
       { env, requestId: "dry-1", caller: "test", linear },
       { ...baseInput, dry_run: true },
     );
-    expect(result).toMatchObject({ status: "planned", dry_run: true });
+    expect(result).toMatchObject({
+      status: "planned",
+      dry_run: true,
+      project_url: null,
+    });
     expect(mutationCalls(calls)).toHaveLength(0);
+    const byName = calls.find((c) => c.query.includes("ProjectsByName"));
+    expect(byName?.variables).toEqual({
+      filter: {
+        name: { eq: "Demo App" },
+        accessibleTeams: { id: { eq: TEAM_ID } },
+      },
+    });
   });
 
   it("dry_run returns conflict for foreign project", async () => {
@@ -117,6 +132,23 @@ describe("createLinearProject", () => {
     );
     expect(result).toMatchObject({ status: "conflict", dry_run: true });
     expect(mutationCalls(calls)).toHaveLength(0);
+  });
+
+  it("dry_run matches write path when label exists but foreign project matches by name", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectsByLabelNodes: [],
+        projectsByNameNodes: [defaultHarnessProject(false)],
+      },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "dry-name-conflict", caller: "test", linear },
+      { ...baseInput, dry_run: true },
+    );
+    expect(result).toMatchObject({ status: "conflict", dry_run: true });
   });
 
   it("dry_run warns on team read failure without treating resources as missing", async () => {
@@ -407,10 +439,315 @@ describe("createLinearProject", () => {
     expect(calls.map((c) => JSON.stringify(c)).join("")).not.toContain(apiKey);
   });
 
-  it("registers create_linear_project on the MCP server", () => {
+  it("returns conflict for foreign project found by name when label has no project", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectsByLabelNodes: [],
+        projectsByNameNodes: [defaultHarnessProject(false)],
+      },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "conflict-by-name", caller: "test", linear },
+      baseInput,
+    );
+    expect(result).toMatchObject({
+      error: { code: "conflict_not_factory_owned", step: "read_project_by_name" },
+    });
+    expect(resourceMutationCalls(calls)).toHaveLength(0);
+    const byName = calls.find((c) => c.query.includes("ProjectsByName"));
+    expect(
+      (byName?.variables as { filter?: Record<string, unknown> })?.filter,
+    ).toMatchObject({
+      accessibleTeams: { id: { eq: TEAM_ID } },
+    });
+  });
+
+  it("returns conflict when multiple projects share the repo label", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectsByLabelNodes: [
+          defaultHarnessProject(true),
+          { ...defaultHarnessProject(false), id: "project-foreign-uuid" },
+        ],
+      },
+      calls,
+    );
+    const dry = await createLinearProject(
+      { env, requestId: "ambig-dry", caller: "test", linear },
+      { ...baseInput, dry_run: true },
+    );
+    expect(dry).toMatchObject({ status: "conflict" });
+    const write = await createLinearProject(
+      {
+        env,
+        requestId: "ambig-write",
+        caller: "test",
+        linear: createHarnessClient(
+          {
+            labelExists: true,
+            projectsByLabelNodes: [
+              defaultHarnessProject(true),
+              { ...defaultHarnessProject(false), id: "project-foreign-uuid" },
+            ],
+          },
+          calls,
+        ),
+      },
+      baseInput,
+    );
+    expect(write).toMatchObject({ error: { code: "conflict_not_factory_owned" } });
+  });
+
+  it("validates project description length at 172 and 173 characters for demo-app", () => {
+    expect(
+      validateProjectDescriptionLength({
+        name: "demo-app",
+        org: "didi-build",
+        summary: "x".repeat(172),
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateProjectDescriptionLength({
+        name: "demo-app",
+        org: "didi-build",
+        summary: "x".repeat(173),
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("rejects empty display_name and whitespace-only fields without Linear calls", async () => {
+    const fetchImpl = () => {
+      throw new Error("Linear must not be called");
+    };
+    expect(
+      await createLinearProject(
+        { env, requestId: "bad-display", caller: "test", fetchImpl },
+        { ...baseInput, display_name: "  " },
+      ),
+    ).toMatchObject({ error: { code: "invalid_input" } });
+    expect(
+      await createLinearProject(
+        { env, requestId: "bad-summary", caller: "test", fetchImpl },
+        { ...baseInput, summary: "   " },
+      ),
+    ).toMatchObject({ error: { code: "invalid_input" } });
+  });
+
+  it("returns failed_step when a Linear read fails on the write path", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      { labelExists: true, failRead: "WorkflowStates" },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "read-fail", caller: "test", linear },
+      baseInput,
+    );
+    expect(result).toMatchObject({
+      error: { code: "upstream_error", step: "read_workflow_state" },
+    });
+  });
+
+  it("records partial failure when project create fails after label was created", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient({ failMutation: "ProjectCreate" }, calls);
+    const result = await createLinearProject(
+      { env, requestId: "partial-project", caller: "test", linear },
+      baseInput,
+    );
+    expect(result).toMatchObject({
+      error: { code: "upstream_error", step: "linear_project" },
+    });
+    expect(calls.some((c) => c.query.includes("ProjectLabelCreate"))).toBe(true);
+    expect(calls.some((c) => c.query.includes("ProjectCreate"))).toBe(true);
+    const line = auditLine(logSpy, "partial-project");
+    expect(line).toContain('"failed_step":"linear_project"');
+    expect(line).toContain("repo_project_label");
+  });
+
+  it("creates repo label under the repo group parent", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient({}, calls);
+    await createLinearProject(
+      { env, requestId: "label-parent", caller: "test", linear },
+      baseInput,
+    );
+    const labelCreate = calls.find((c) => c.query.includes("ProjectLabelCreate"));
+    expect(labelCreate?.variables).toEqual({
+      input: { name: "didi-build/demo-app", parentId: "group-repo-uuid" },
+    });
+  });
+
+  it("never updates the idea issue and links with type related", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      { labelExists: true, projectExists: true, kickoffExists: true, ideaIssue: true },
+      calls,
+    );
+    await createLinearProject(
+      { env, requestId: "idea-link", caller: "test", linear },
+      { ...baseInput, idea_issue: "DIDI-830" },
+    );
+    expect(calls.some((c) => c.query.includes("IssueUpdate"))).toBe(false);
+    const relation = calls.find((c) => c.query.includes("IssueRelationCreate"));
+    expect(relation?.variables).toEqual({
+      input: {
+        issueId: "kickoff-uuid",
+        relatedIssueId: "idea-uuid",
+        type: "related",
+      },
+    });
+  });
+
+  it("fails if idea relation type is not related", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+        ideaIssue: true,
+        ideaHasRelationToKickoff: true,
+        ideaRelationType: "blocks",
+      },
+      calls,
+    );
+    await createLinearProject(
+      { env, requestId: "idea-blocks", caller: "test", linear },
+      { ...baseInput, idea_issue: "DIDI-830" },
+    );
+    expect(calls.some((c) => c.query.includes("IssueRelationCreate"))).toBe(true);
+  });
+
+  const dryRunReadFailures: {
+    failRead: string;
+    step: string;
+    warning: string;
+    state?: HarnessState;
+  }[] = [
+    { failRead: "query Teams", step: "read_linear_team", warning: "team read failed" },
+    {
+      failRead: "projectLabels",
+      step: "read_project_labels",
+      warning: "project label read failed",
+    },
+    {
+      failRead: "ProjectsByLabel",
+      step: "read_project_by_label",
+      warning: "project read by label failed",
+      state: { labelExists: true },
+    },
+    {
+      failRead: "ProjectsByName",
+      step: "read_project_by_name",
+      warning: "project read by name failed",
+    },
+    {
+      failRead: "KickoffByMarker",
+      step: "read_kickoff_epic",
+      warning: "kickoff epic read failed",
+      state: { labelExists: true, projectExists: true },
+    },
+    {
+      failRead: "WorkflowStates",
+      step: "read_workflow_state",
+      warning: "workflow state read failed",
+    },
+    {
+      failRead: "IssueById",
+      step: "read_idea_issue",
+      warning: "idea issue read failed",
+      state: { labelExists: true, projectExists: true, ideaIssue: true },
+    },
+  ];
+
+  for (const scenario of dryRunReadFailures) {
+    it(`dry_run records ${scenario.step} read failure`, async () => {
+      const linear = createHarnessClient(
+        { ...(scenario.state ?? {}), failRead: scenario.failRead },
+        [],
+      );
+      const result = await createLinearProject(
+        {
+          env,
+          requestId: `dry-fail-${scenario.step}`,
+          caller: "test",
+          linear,
+        },
+        {
+          ...baseInput,
+          dry_run: true,
+          ...(scenario.step === "read_idea_issue" ? { idea_issue: "DIDI-830" } : {}),
+        },
+      );
+      const planned = result as {
+        warnings: string[];
+        steps: { id: string; status: string }[];
+      };
+      expect(
+        planned.warnings.some((w) => w.toLowerCase().includes(scenario.warning)),
+      ).toBe(true);
+      expect(
+        planned.steps.some((s) => s.id === scenario.step && s.status === "failed"),
+      ).toBe(true);
+    });
+  }
+
+  it("registers create_linear_project on the MCP server with validation and dry_run passthrough", async () => {
     const server = createFactoryMcpServer(env, "req-mcp", "mcp-caller");
-    const tools = (server as unknown as { _registeredTools: Record<string, unknown> })
-      ._registeredTools;
-    expect(tools).toHaveProperty("create_linear_project");
+    const tool = (
+      server as unknown as {
+        _registeredTools: {
+          create_linear_project: {
+            executor: (input: Record<string, unknown>) => Promise<unknown>;
+          };
+        };
+      }
+    )._registeredTools.create_linear_project;
+    expect(tool).toBeDefined();
+
+    const spy = vi
+      .spyOn(createLinearProjectModule, "createLinearProject")
+      .mockResolvedValue({
+        request_id: "req-mcp",
+        status: "planned",
+        dry_run: true,
+        steps: [],
+        warnings: [],
+        project_url: null,
+        project_label: "didi-build/demo-app",
+        kickoff_epic: null,
+        linear: { linear_read_ok: false },
+      } as never);
+
+    await tool.executor({
+      name: "demo-app",
+      display_name: "Demo App",
+      summary: "A demo",
+      approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+      dry_run: false,
+    });
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "req-mcp", caller: "mcp-caller" }),
+      expect.objectContaining({ dry_run: false }),
+    );
+
+    spy.mockRestore();
+    const invalid = (await tool.executor({
+      name: "demo-app",
+      display_name: "",
+      summary: "A demo",
+      approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+    })) as { content: { text: string }[] };
+    const payload = JSON.parse(String(invalid.content[0].text)) as {
+      error?: { code: string };
+    };
+    expect(payload).toMatchObject({ error: { code: "invalid_input" } });
   });
 });

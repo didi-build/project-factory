@@ -6,18 +6,85 @@ export type GraphqlCall = {
   variables?: unknown;
 };
 
+export type HarnessProjectNode = {
+  id: string;
+  name: string;
+  url: string;
+  description: string;
+  factoryMarker: boolean;
+};
+
 export type HarnessState = {
   teamId?: string;
   labelExists?: boolean;
   labelOutsideRepoGroup?: boolean;
+  /** @deprecated use projectsByLabelNodes / projectsByNameNodes */
   projectExists?: boolean;
   factoryMarker?: boolean;
+  projectsByLabelNodes?: HarnessProjectNode[];
+  projectsByNameNodes?: HarnessProjectNode[];
   kickoffExists?: boolean;
   kickoffStateId?: string;
   ideaIssue?: boolean;
   ideaHasRelationToKickoff?: boolean;
+  ideaRelationType?: string;
   failMutation?: string;
+  /** When set, queries containing this substring return HTTP 502. */
+  failRead?: string;
 };
+
+const LABEL_ID = "label-demo-uuid";
+const PROJECT_ID = "project-demo-uuid";
+
+function toApiProject(node: HarnessProjectNode, labelId: string) {
+  return {
+    id: node.id,
+    name: node.name,
+    url: node.url,
+    description: node.description,
+    labels: { nodes: [{ id: labelId, name: "didi-build/demo-app" }] },
+    externalLinks: {
+      nodes: node.factoryMarker
+        ? [
+            {
+              id: "link-1",
+              url: "https://github.com/didi-build/demo-app",
+              label: "GitHub",
+            },
+          ]
+        : [],
+    },
+  };
+}
+
+export function defaultHarnessProject(factoryMarker: boolean): HarnessProjectNode {
+  return {
+    id: PROJECT_ID,
+    name: "Demo App",
+    url: "https://linear.app/didi-build/project/demo",
+    description: factoryMarker
+      ? "A demo\n\nGitHub: https://github.com/didi-build/demo-app\n\n<!-- project-factory:demo-app -->"
+      : "foreign",
+    factoryMarker,
+  };
+}
+
+function resolveProjectNodes(
+  state: HarnessState,
+  byLabel: boolean,
+): HarnessProjectNode[] {
+  if (byLabel && state.projectsByLabelNodes !== undefined) {
+    return state.projectsByLabelNodes;
+  }
+  if (!byLabel && state.projectsByNameNodes !== undefined) {
+    return state.projectsByNameNodes;
+  }
+  if (state.projectExists) {
+    const marker = state.factoryMarker ?? true;
+    return [defaultHarnessProject(marker)];
+  }
+  return [];
+}
 
 export function createHarnessClient(
   state: HarnessState,
@@ -25,8 +92,6 @@ export function createHarnessClient(
 ): LinearClient {
   const TEAM_ID = state.teamId ?? "cff86df5-36a6-4c6a-8527-7ef0bee09c1e";
   const REPO_GROUP_ID = "group-repo-uuid";
-  const LABEL_ID = "label-demo-uuid";
-  const PROJECT_ID = "project-demo-uuid";
   const STATE_ID = state.kickoffStateId ?? "state-cto-uuid";
   const KICKOFF_ID = "kickoff-uuid";
   const IDEA_ID = "idea-uuid";
@@ -37,6 +102,17 @@ export function createHarnessClient(
       const body = JSON.parse(String(init?.body)) as GraphqlCall;
       calls.push(body);
       const q = body.query;
+
+      if (state.failRead && q.includes(state.failRead)) {
+        return new Response(
+          JSON.stringify({
+            errors: [
+              { message: "read failed", extensions: { code: "INTERNAL_ERROR" } },
+            ],
+          }),
+          { status: 502 },
+        );
+      }
 
       if (state.failMutation && q.includes(state.failMutation)) {
         return new Response(
@@ -70,43 +146,17 @@ export function createHarnessClient(
         }
         return new Response(JSON.stringify({ data: { projectLabels: { nodes } } }));
       }
-      if (q.includes("ProjectsByLabel") || q.includes("ProjectsByName")) {
-        if (state.projectExists) {
-          const marker = state.factoryMarker ?? true;
-          return new Response(
-            JSON.stringify({
-              data: {
-                projects: {
-                  nodes: [
-                    {
-                      id: PROJECT_ID,
-                      name: "Demo App",
-                      url: "https://linear.app/didi-build/project/demo",
-                      description: marker
-                        ? "A demo\n\nGitHub: https://github.com/didi-build/demo-app\n\n<!-- project-factory:demo-app -->"
-                        : "foreign",
-                      labels: {
-                        nodes: [{ id: LABEL_ID, name: "didi-build/demo-app" }],
-                      },
-                      externalLinks: {
-                        nodes: marker
-                          ? [
-                              {
-                                id: "link-1",
-                                url: "https://github.com/didi-build/demo-app",
-                                label: "GitHub",
-                              },
-                            ]
-                          : [],
-                      },
-                    },
-                  ],
-                },
-              },
-            }),
-          );
-        }
-        return new Response(JSON.stringify({ data: { projects: { nodes: [] } } }));
+      if (q.includes("ProjectsByLabel")) {
+        const nodes = resolveProjectNodes(state, true).map((p) =>
+          toApiProject(p, LABEL_ID),
+        );
+        return new Response(JSON.stringify({ data: { projects: { nodes } } }));
+      }
+      if (q.includes("ProjectsByName")) {
+        const nodes = resolveProjectNodes(state, false).map((p) =>
+          toApiProject(p, LABEL_ID),
+        );
+        return new Response(JSON.stringify({ data: { projects: { nodes } } }));
       }
       if (q.includes("WorkflowStates")) {
         return new Response(
@@ -145,10 +195,11 @@ export function createHarnessClient(
       }
       if (q.includes("IssueById")) {
         if (state.ideaIssue) {
+          const relationType = state.ideaRelationType ?? "related";
           const relations = state.ideaHasRelationToKickoff
             ? [
                 {
-                  type: "related",
+                  type: relationType,
                   issue: { id: IDEA_ID, identifier: "DIDI-830" },
                   relatedIssue: { id: KICKOFF_ID, identifier: "DIDI-900" },
                 },

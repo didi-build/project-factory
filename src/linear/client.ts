@@ -17,15 +17,31 @@ export type GraphQLResponse<T> = {
   errors?: { message: string; extensions?: { code?: string } }[];
 };
 
-const MAX_RETRY_AFTER_MS = 10_000;
+export const MAX_RETRY_AFTER_MS = 10_000;
+
+export function publicLinearErrorMessage(status: number, code: string): string {
+  return `${status} ${code}`;
+}
 
 function normalizeApiCode(
   status: number,
   apiCode: string | undefined,
-  apiMessage: string,
 ): { code: string; retryable: boolean } {
   const upper = apiCode?.toUpperCase();
-  if (upper === "RATELIMITED" || status === 429) {
+  switch (upper) {
+    case "RATELIMITED":
+      return { code: "rate_limited", retryable: true };
+    case "AUTHENTICATION_ERROR":
+    case "INVALID_API_KEY":
+      return { code: "missing_secret", retryable: false };
+    case "FORBIDDEN":
+    case "NOT_AUTHORIZED":
+    case "NOT_ALLOWED":
+      return { code: "permission_denied", retryable: false };
+    default:
+      break;
+  }
+  if (status === 429) {
     return { code: "rate_limited", retryable: true };
   }
   if (status === 401) {
@@ -37,30 +53,15 @@ function normalizeApiCode(
   if (status >= 500) {
     return { code: "upstream_error", retryable: true };
   }
-  const lower = apiMessage.toLowerCase();
-  if (
-    lower.includes("authentication") ||
-    lower.includes("not authenticated") ||
-    lower.includes("invalid api key")
-  ) {
-    return { code: "missing_secret", retryable: false };
-  }
-  if (lower.includes("not authorized") || lower.includes("forbidden")) {
-    return { code: "permission_denied", retryable: false };
-  }
   return { code: "upstream_error", retryable: false };
 }
 
-function normalizeGraphqlError(
-  status: number,
-  message: string,
-  code?: string,
-): LinearError {
-  const normalized = normalizeApiCode(status, code, message);
+function toLinearError(status: number, apiCode: string | undefined): LinearError {
+  const normalized = normalizeApiCode(status, apiCode);
   return {
     status,
     code: normalized.code,
-    message,
+    message: publicLinearErrorMessage(status, normalized.code),
     retryable: normalized.retryable,
   };
 }
@@ -82,7 +83,7 @@ export class LinearClient {
         error: {
           status: 0,
           code: "missing_secret",
-          message: "PROJECT_FACTORY_LINEAR_API_KEY",
+          message: publicLinearErrorMessage(0, "missing_secret"),
           retryable: false,
         },
       };
@@ -103,18 +104,16 @@ export class LinearClient {
 
       if (!response.ok) {
         let apiCode: string | undefined;
-        let apiMessage = response.statusText;
         try {
           const errBody = (await response.json()) as {
             errors?: { message?: string; extensions?: { code?: string } }[];
           };
-          apiMessage = errBody.errors?.[0]?.message ?? apiMessage;
           apiCode = errBody.errors?.[0]?.extensions?.code;
         } catch {
           // ignore parse errors
         }
-        const normalized = normalizeApiCode(response.status, apiCode, apiMessage);
-        if (!mutation && normalized.retryable && attempt < maxAttempts - 1) {
+        const err = toLinearError(response.status, apiCode);
+        if (!mutation && err.retryable && attempt < maxAttempts - 1) {
           const retryAfter = Number.parseInt(
             response.headers.get("Retry-After") ?? "",
             10,
@@ -128,10 +127,8 @@ export class LinearClient {
         return {
           ok: false,
           error: {
-            status: response.status,
-            code: normalized.code,
-            message: apiMessage,
-            retryable: mutation ? false : normalized.retryable,
+            ...err,
+            retryable: mutation ? false : err.retryable,
           },
         };
       }
@@ -145,7 +142,7 @@ export class LinearClient {
           error: {
             status: response.status,
             code: "upstream_error",
-            message: "response was not valid JSON",
+            message: publicLinearErrorMessage(response.status, "upstream_error"),
             retryable: false,
           },
         };
@@ -153,9 +150,8 @@ export class LinearClient {
 
       if (body.errors?.length) {
         const first = body.errors[0];
-        const message = first.message ?? "GraphQL error";
         const code = first.extensions?.code;
-        const err = normalizeGraphqlError(response.status, message, code);
+        const err = toLinearError(response.status, code);
         if (!mutation && err.retryable && attempt < maxAttempts - 1) {
           await new Promise((r) => setTimeout(r, (attempt + 1) * 500));
           continue;
@@ -169,7 +165,7 @@ export class LinearClient {
           error: {
             status: response.status,
             code: "upstream_error",
-            message: "empty GraphQL data",
+            message: publicLinearErrorMessage(response.status, "upstream_error"),
             retryable: false,
           },
         };
@@ -183,7 +179,7 @@ export class LinearClient {
       error: {
         status: 500,
         code: "upstream_error",
-        message: "max retries exceeded",
+        message: publicLinearErrorMessage(500, "upstream_error"),
         retryable: true,
       },
     };
