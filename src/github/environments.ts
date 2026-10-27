@@ -1,4 +1,4 @@
-import type { GitHubClient } from "./client.js";
+import type { GitHubClient, GitHubError } from "./client.js";
 import { mapGithubFailure } from "./github-errors.js";
 import {
   GITHUB_ENV_PREVIEW,
@@ -24,6 +24,7 @@ export type DeploymentBranchPolicyItem = {
 /** Shape of GET /repos/{owner}/{repo}/environments/{environment_name} (GitHub REST). */
 export type GithubEnvironmentGetResponse = {
   name?: string;
+  can_admins_bypass?: boolean;
   deployment_branch_policy?: {
     protected_branches?: boolean;
     custom_branch_policies?: boolean;
@@ -44,7 +45,8 @@ export type ProductionVerifyFailure =
   | "wrong_reviewer"
   | "branch_policy_disabled"
   | "branch_policy_not_main_only"
-  | "branch_policy_wrong_type";
+  | "branch_policy_wrong_type"
+  | "admins_can_bypass";
 
 export function buildProductionEnvironmentPutBody(
   reviewerUserId: number,
@@ -76,6 +78,10 @@ export function verifyProductionEnvironmentConfig(
   }
   if (!hasReviewer) {
     return { ok: false, reason: "wrong_reviewer" };
+  }
+
+  if (envData.can_admins_bypass !== false) {
+    return { ok: false, reason: "admins_can_bypass" };
   }
 
   const policy = envData.deployment_branch_policy;
@@ -319,6 +325,7 @@ export async function verifyProductionGithubEnvironment(
         "production environment must allow exactly one deployment branch (main)",
       branch_policy_wrong_type:
         "production environment deployment branch policy must be type branch named main",
+      admins_can_bypass: "production environment must set can_admins_bypass to false",
     };
     return {
       ok: false,
@@ -371,12 +378,10 @@ export async function listEnvironmentNames(
         ),
       };
     }
-    const ghError = (
-      listed as { error: { status: number; code?: string; message: string } }
-    ).error;
+    const ghError = (listed as { error: GitHubError }).error;
     return {
       ok: false,
-      error: mapGithubFailure({ ...ghError, retryable: false }, "list_environments"),
+      error: mapGithubFailure(ghError, "list_environments"),
     };
   }
   return { ok: true, names: listed.items.map((e) => e.name).sort() };

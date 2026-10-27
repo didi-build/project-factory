@@ -31,6 +31,26 @@ describe("mint policy guards", () => {
     );
   });
 
+  it("rejects wrong Individual Workers Editor permission group id", () => {
+    expect(() =>
+      assertIndividualWorkersEditorPermissionGroup({
+        id: "wrong-id",
+        name: "Individual Workers Editor",
+        scopes: ["com.cloudflare.api.account.workers"],
+      }),
+    ).toThrow(INDIVIDUAL_WORKERS_EDITOR_PERMISSION_ID);
+  });
+
+  it("rejects wrong Individual Workers Editor permission group name", () => {
+    expect(() =>
+      assertIndividualWorkersEditorPermissionGroup({
+        id: INDIVIDUAL_WORKERS_EDITOR_PERMISSION_ID,
+        name: "Workers Scripts Read",
+        scopes: ["com.cloudflare.api.account.workers"],
+      }),
+    ).toThrow(/Individual Workers Editor/);
+  });
+
   it("rejects editor group without worker scopes", () => {
     expect(() =>
       assertIndividualWorkersEditorPermissionGroup({

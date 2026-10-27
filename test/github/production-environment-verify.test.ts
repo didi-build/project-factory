@@ -11,6 +11,7 @@ function envFixture(
 ): GithubEnvironmentGetResponse {
   return {
     name: "production",
+    can_admins_bypass: false,
     deployment_branch_policy: {
       protected_branches: false,
       custom_branch_policies: true,
@@ -76,6 +77,15 @@ describe("verifyProductionEnvironmentConfig", () => {
   it("fails when branch policy is not main-only", () => {
     const result = verifyProductionEnvironmentConfig(envFixture(), [], REVIEWER_ID);
     expect(result).toEqual({ ok: false, reason: "branch_policy_not_main_only" });
+  });
+
+  it("fails when can_admins_bypass is not false", () => {
+    const result = verifyProductionEnvironmentConfig(
+      envFixture({ can_admins_bypass: true }),
+      [{ name: "main", type: "branch" }],
+      REVIEWER_ID,
+    );
+    expect(result).toEqual({ ok: false, reason: "admins_can_bypass" });
   });
 
   it("fails when deployment rule is a tag named main", () => {

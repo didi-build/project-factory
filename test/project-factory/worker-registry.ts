@@ -6,11 +6,19 @@ import {
 
 export type WorkerScriptRegistry = Map<string, string | undefined>;
 
+export type CfPermissionGroupFixture = {
+  id: string;
+  name: string;
+  scopes: string[];
+};
+
 export type CloudflareMockOptions = {
   tokensListFails?: boolean;
   revokeFails?: boolean;
   accountsStatus?: number;
   accountsCode?: number;
+  permissionGroups?: CfPermissionGroupFixture[];
+  existingDeployToken?: { id: string; name: string };
 };
 
 export type WorkerRegistry = {

@@ -16,9 +16,23 @@ export const WORKERS_SCRIPTS_READ_PERMISSION_NAME = "Workers Scripts Read";
 
 const SCRIPT_TAG_PATTERN = /^[a-f0-9]{32}$/i;
 
-export function assertWorkerScriptTag(scriptTag: string): void {
+export function validateWorkerScriptTag(
+  scriptTag: string,
+): { ok: true } | { ok: false; message: string } {
   if (!SCRIPT_TAG_PATTERN.test(scriptTag)) {
-    throw new Error(`worker script tag must be 32 hex characters, got ${scriptTag}`);
+    return {
+      ok: false,
+      message: `worker script tag must be 32 hex characters, got ${scriptTag}`,
+    };
+  }
+  return { ok: true };
+}
+
+/** @deprecated prefer validateWorkerScriptTag for mint paths */
+export function assertWorkerScriptTag(scriptTag: string): void {
+  const result = validateWorkerScriptTag(scriptTag);
+  if (!result.ok) {
+    throw new Error(result.message);
   }
 }
 

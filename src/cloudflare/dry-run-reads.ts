@@ -1,10 +1,12 @@
 import type { ProjectFactoryEnv } from "../env.js";
+import { FACTORY_WORKER_TAG } from "../factory/provision-constants.js";
 
 export type CloudflareDryRunRead = {
   account_id?: string;
   worker_name: string;
   worker_exists?: boolean;
   worker_secret_names?: string[];
+  conflict_not_factory_owned?: boolean;
   skipped?: string;
   error?: string;
 };
@@ -54,21 +56,27 @@ export async function readWorkerDryRunState(
 ): Promise<{
   worker_exists?: boolean;
   worker_secret_names?: string[];
+  conflict_not_factory_owned?: boolean;
   error?: string;
 }> {
   const out: {
     worker_exists?: boolean;
     worker_secret_names?: string[];
+    conflict_not_factory_owned?: boolean;
     error?: string;
   } = {};
 
-  const settings = await cfGet<unknown>(
+  const settings = await cfGet<{ tags?: string[] }>(
     token,
     `/accounts/${accountId}/workers/scripts/${workerName}/settings`,
     fetchImpl,
   );
   if (settings.ok) {
     out.worker_exists = true;
+    const tags = settings.data?.tags ?? [];
+    if (!tags.includes(FACTORY_WORKER_TAG)) {
+      out.conflict_not_factory_owned = true;
+    }
   } else if (settings.status === 404) {
     out.worker_exists = false;
   } else {
@@ -132,6 +140,9 @@ export async function cloudflareDryRunReads(
   }
   out.worker_exists = workerState.worker_exists;
   out.worker_secret_names = workerState.worker_secret_names;
+  if (workerState.conflict_not_factory_owned) {
+    out.conflict_not_factory_owned = true;
+  }
 
   return out;
 }
@@ -140,6 +151,7 @@ export type ProvisionWorkersDryRunRead = {
   account_id?: string;
   production: CloudflareDryRunRead;
   preview: CloudflareDryRunRead;
+  conflict_not_factory_owned: boolean;
   skipped?: string;
   warnings: string[];
 };
@@ -162,6 +174,7 @@ export async function provisionWorkersDryRunReads(
         worker_name: previewName,
         skipped: "PROJECT_FACTORY_CLOUDFLARE_API_TOKEN not set",
       },
+      conflict_not_factory_owned: false,
       skipped: "PROJECT_FACTORY_CLOUDFLARE_API_TOKEN not set",
       warnings: ["PROJECT_FACTORY_CLOUDFLARE_API_TOKEN not set"],
     };
@@ -183,6 +196,7 @@ export async function provisionWorkersDryRunReads(
         worker_name: previewName,
         error: `GET /accounts failed: ${accounts.message}`,
       },
+      conflict_not_factory_owned: false,
       warnings,
     };
   }
@@ -192,6 +206,7 @@ export async function provisionWorkersDryRunReads(
     return {
       production: { worker_name: productionName, error: msg },
       preview: { worker_name: previewName, error: msg },
+      conflict_not_factory_owned: false,
       warnings,
     };
   }
@@ -217,6 +232,10 @@ export async function provisionWorkersDryRunReads(
     warnings.push(previewState.error);
   }
 
+  const conflictNotFactoryOwned =
+    productionState.conflict_not_factory_owned === true ||
+    previewState.conflict_not_factory_owned === true;
+
   return {
     account_id: accountId,
     production: {
@@ -224,6 +243,7 @@ export async function provisionWorkersDryRunReads(
       account_id: accountId,
       worker_exists: productionState.worker_exists,
       worker_secret_names: productionState.worker_secret_names,
+      conflict_not_factory_owned: productionState.conflict_not_factory_owned,
       error: productionState.error,
     },
     preview: {
@@ -231,8 +251,10 @@ export async function provisionWorkersDryRunReads(
       account_id: accountId,
       worker_exists: previewState.worker_exists,
       worker_secret_names: previewState.worker_secret_names,
+      conflict_not_factory_owned: previewState.conflict_not_factory_owned,
       error: previewState.error,
     },
+    conflict_not_factory_owned: conflictNotFactoryOwned,
     warnings,
   };
 }

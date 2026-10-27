@@ -1,6 +1,7 @@
 import {
   assertIndividualWorkersEditorPermissionGroup,
   assertMintPoliciesSafe,
+  validateWorkerScriptTag,
   buildPreviewDeployTokenPolicies,
   buildProductionDeployTokenPolicies,
   INDIVIDUAL_WORKERS_EDITOR_PERMISSION_ID,
@@ -91,9 +92,19 @@ function mapCfFailure(
 ): {
   error: { code: string; message: string; step: string; retryable: boolean };
 } {
-  const message = trimCfErrorMessage(result.status, result.code);
+  let message = trimCfErrorMessage(result.status, result.code);
+  if (result.status === 400 && result.message) {
+    message = result.message;
+  }
   if (result.status === 401) {
-    return { error: { code: "missing_secret", message, step, retryable: false } };
+    return {
+      error: {
+        code: "missing_secret",
+        message: "PROJECT_FACTORY_CLOUDFLARE_API_TOKEN",
+        step,
+        retryable: false,
+      },
+    };
   }
   if (result.status === 403) {
     return {
@@ -265,6 +276,16 @@ export class CloudflareFactoryClient {
             status: 400,
             message: `worker script ${workerName} is missing tag metadata`,
           },
+          "cf_worker_script_tag",
+        ),
+      };
+    }
+    const tagCheck = validateWorkerScriptTag(script.tag);
+    if (!tagCheck.ok) {
+      return {
+        ok: false,
+        error: mapCfFailure(
+          { status: 400, message: tagCheck.message },
           "cf_worker_script_tag",
         ),
       };

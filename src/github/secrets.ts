@@ -1,4 +1,4 @@
-import type { GitHubClient } from "./client.js";
+import type { GitHubClient, GitHubError } from "./client.js";
 import { mapGithubFailure } from "./github-errors.js";
 import { sealGitHubSecret } from "./github-secret-seal.js";
 import { paginateGithubApiList } from "./paginate-list.js";
@@ -104,12 +104,10 @@ export async function listRepoSecretNames(
         ),
       };
     }
-    const ghError = (
-      listed as { error: { status: number; code?: string; message: string } }
-    ).error;
+    const ghError = (listed as { error: GitHubError }).error;
     return {
       ok: false,
-      error: mapGithubFailure({ ...ghError, retryable: false }, "list_repo_secrets"),
+      error: mapGithubFailure(ghError, "list_repo_secrets"),
     };
   }
   return { ok: true, names: listed.items.map((s) => s.name).sort() };
@@ -152,15 +150,10 @@ export async function listEnvironmentSecretNames(
         ),
       };
     }
-    const ghError = (
-      listed as { error: { status: number; code?: string; message: string } }
-    ).error;
+    const ghError = (listed as { error: GitHubError }).error;
     return {
       ok: false,
-      error: mapGithubFailure(
-        { ...ghError, retryable: false },
-        "list_environment_secrets",
-      ),
+      error: mapGithubFailure(ghError, "list_environment_secrets"),
     };
   }
   return { ok: true, names: listed.items.map((s) => s.name).sort() };

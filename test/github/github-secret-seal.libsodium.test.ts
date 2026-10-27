@@ -33,6 +33,12 @@ describe("sealGitHubSecret (tweetnacl) vs libsodium crypto_box_seal_open", () =>
     });
   }
 
+  it("rejects invalid public key length", () => {
+    expect(() => sealGitHubSecret("x", "YQ==")).toThrow(
+      "invalid GitHub secret public key length",
+    );
+  });
+
   it("does not return plaintext as sealed output", () => {
     const plaintext = "must-not-leak";
     const sealed = sealGitHubSecret(plaintext, publicKeyBase64);

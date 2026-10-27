@@ -270,7 +270,12 @@ export async function buildProvisionCloudflareDryRunPlan(
   }
 
   let status: ProvisionDryRunPlan["status"] = "planned";
-  if (github.conflict_not_factory_owned) {
+  if (cloudflare.conflict_not_factory_owned) {
+    status = "conflict";
+    warnings.push(
+      "Worker exists without the project-factory tag; dry run will not modify it",
+    );
+  } else if (github.conflict_not_factory_owned) {
     status = "conflict";
     warnings.push(
       "Repository exists without the project-factory topic; dry run will not modify it",

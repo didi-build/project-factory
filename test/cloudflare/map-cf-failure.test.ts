@@ -9,13 +9,13 @@ describe("trimCfErrorMessage", () => {
 });
 
 describe("mapCfFailure", () => {
-  it("maps 401 to missing_secret", () => {
+  it("maps 401 to missing_secret naming PROJECT_FACTORY_CLOUDFLARE_API_TOKEN", () => {
     expect(
       mapCfFailure({ status: 401, message: "x", code: 1000 }, "cf_accounts"),
     ).toEqual({
       error: {
         code: "missing_secret",
-        message: "401 1000",
+        message: "PROJECT_FACTORY_CLOUDFLARE_API_TOKEN",
         step: "cf_accounts",
         retryable: false,
       },
