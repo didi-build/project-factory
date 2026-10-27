@@ -1,21 +1,27 @@
 import type { ProjectFactoryEnv } from "../env.js";
 import {
-  DIDI_BUILD_LINEAR_TEAM_ID,
   KICKOFF_WORKFLOW_STATE_NAME,
   REPO_PROJECT_LABEL_GROUP_NAME,
   linearRepoProjectLabelName,
 } from "../factory/linear-constants.js";
 import {
+  factoryKickoffEpicMarker,
   kickoffEpicTitle,
   projectHasFactoryMarker,
 } from "../factory/linear-content.js";
 import { LinearClient } from "../linear/client.js";
 import {
+  detectForeignProjectConflict,
+  detectRepoLabelConflict,
+} from "../linear/ownership.js";
+import {
   findIssueByIdentifier,
-  findKickoffIssues,
+  findKickoffEpicByMarker,
   findProjects,
   findWorkflowStateId,
   listProjectLabels,
+  resolveLinearTeamId,
+  teamScopedProjectNameFilter,
 } from "../linear/operations.js";
 import type { FactoryStep } from "./types.js";
 
@@ -28,12 +34,12 @@ export type LinearDryRunDiscovery = {
   project_exists?: boolean | null;
   factory_owned?: boolean | null;
   kickoff_epic_exists?: boolean | null;
-  kickoff_state_ok?: boolean | null;
   idea_issue_found?: boolean | null;
+  conflict?: string;
 };
 
 export type CreateLinearProjectDryRunPlan = {
-  status: "planned";
+  status: "planned" | "conflict";
   dry_run: true;
   steps: FactoryStep[];
   warnings: string[];
@@ -51,6 +57,7 @@ export async function buildCreateLinearProjectDryRunPlan(
     summary: string;
     org: string;
     ideaIssue?: string;
+    projectDescription: string;
   },
   deps?: { fetchImpl?: typeof fetch; linear?: LinearClient },
 ): Promise<CreateLinearProjectDryRunPlan> {
@@ -59,6 +66,7 @@ export async function buildCreateLinearProjectDryRunPlan(
   const repoUrl = `https://github.com/${input.org}/${input.name}`;
   const steps: FactoryStep[] = [];
   const warnings: string[] = [];
+  let planStatus: "planned" | "conflict" = "planned";
 
   steps.push({
     id: "repo_project_label",
@@ -78,7 +86,7 @@ export async function buildCreateLinearProjectDryRunPlan(
   steps.push({
     id: "kickoff_epic",
     status: "planned",
-    detail: `${kickoffTitle} in ${KICKOFF_WORKFLOW_STATE_NAME}`,
+    detail: `${kickoffTitle} with epic marker in ${KICKOFF_WORKFLOW_STATE_NAME}`,
   });
   if (input.ideaIssue) {
     steps.push({
@@ -94,17 +102,16 @@ export async function buildCreateLinearProjectDryRunPlan(
     project_exists: null,
     factory_owned: null,
     kickoff_epic_exists: null,
-    kickoff_state_ok: null,
     idea_issue_found: null,
   };
 
   let kickoffEpic: { identifier: string; url: string } | null = null;
-  let projectUrl = `https://linear.app/didi-build/project/planned-${input.name}`;
+  let projectUrl = "";
 
   if (!env.PROJECT_FACTORY_LINEAR_API_KEY) {
     warnings.push("PROJECT_FACTORY_LINEAR_API_KEY not set; skipped Linear reads");
     return {
-      status: "planned",
+      status: planStatus,
       dry_run: true,
       steps,
       warnings,
@@ -122,6 +129,33 @@ export async function buildCreateLinearProjectDryRunPlan(
       fetchImpl: deps?.fetchImpl,
     });
 
+  const teamResult = await resolveLinearTeamId(linear, env.PROJECT_FACTORY_LINEAR_TEAM);
+  if (!teamResult.ok) {
+    linearDiscovery.linear_error = teamResult.error.error.message;
+    warnings.push(`Linear team read failed: ${teamResult.error.error.message}`);
+    steps.push({
+      id: "read_linear_team",
+      status: "failed",
+      detail: teamResult.error.error.message,
+    });
+    return {
+      status: planStatus,
+      dry_run: true,
+      steps,
+      warnings,
+      project_url: projectUrl,
+      project_label: projectLabel,
+      kickoff_epic: kickoffEpic,
+      linear: linearDiscovery,
+    };
+  }
+  const teamId = teamResult.teamId;
+  steps.push({
+    id: "read_linear_team",
+    status: "done",
+    detail: env.PROJECT_FACTORY_LINEAR_TEAM,
+  });
+
   const labelsResult = await listProjectLabels(linear, {
     name: { in: [REPO_PROJECT_LABEL_GROUP_NAME, projectLabel] },
   });
@@ -136,7 +170,7 @@ export async function buildCreateLinearProjectDryRunPlan(
       detail: labelsResult.error.error.message,
     });
     return {
-      status: "planned",
+      status: planStatus,
       dry_run: true,
       steps,
       warnings,
@@ -163,13 +197,45 @@ export async function buildCreateLinearProjectDryRunPlan(
       `repo project label group "${REPO_PROJECT_LABEL_GROUP_NAME}" not found`,
     );
   }
+
+  if (group) {
+    const labelsByName = await listProjectLabels(linear, {
+      name: { eq: projectLabel },
+    });
+    if (!labelsByName.ok) {
+      warnings.push(
+        `Linear project label read by name failed: ${labelsByName.error.error.message}`,
+      );
+      steps.push({
+        id: "read_project_label_by_name",
+        status: "failed",
+        detail: labelsByName.error.error.message,
+      });
+    } else {
+      const labelConflict = detectRepoLabelConflict(
+        labelsByName.labels,
+        projectLabel,
+        group.id,
+      );
+      if (labelConflict) {
+        planStatus = "conflict";
+        linearDiscovery.conflict = labelConflict.message;
+        steps.push({
+          id: "repo_project_label",
+          status: "failed",
+          detail: labelConflict.message,
+        });
+      }
+    }
+  }
+
   linearDiscovery.repo_label_exists = Boolean(repoLabel);
   if (repoLabel) {
     linearDiscovery.repo_label_id = repoLabel.id;
   }
 
   let projectId: string | undefined;
-  if (repoLabel) {
+  if (planStatus !== "conflict" && repoLabel) {
     const byLabel = await findProjects(
       linear,
       { labels: { id: { eq: repoLabel.id } } },
@@ -193,15 +259,24 @@ export async function buildCreateLinearProjectDryRunPlan(
         project.description,
         input.name,
       );
+      const conflict = detectForeignProjectConflict(
+        project,
+        input.name,
+        "read_project_by_label",
+      );
+      if (conflict) {
+        planStatus = "conflict";
+        linearDiscovery.conflict = conflict.message;
+      }
       steps.push({ id: "read_project_by_label", status: "done", detail: project.name });
     } else {
       linearDiscovery.project_exists = false;
       steps.push({ id: "read_project_by_label", status: "done", detail: "none" });
     }
-  } else {
+  } else if (planStatus !== "conflict") {
     const byName = await findProjects(
       linear,
-      { name: { eq: input.displayName } },
+      teamScopedProjectNameFilter(teamId, input.displayName),
       "read_project_by_name",
     );
     if (!byName.ok) {
@@ -222,6 +297,15 @@ export async function buildCreateLinearProjectDryRunPlan(
         project.description,
         input.name,
       );
+      const conflict = detectForeignProjectConflict(
+        project,
+        input.name,
+        "read_project_by_name",
+      );
+      if (conflict) {
+        planStatus = "conflict";
+        linearDiscovery.conflict = conflict.message;
+      }
       steps.push({ id: "read_project_by_name", status: "done", detail: project.name });
     } else {
       linearDiscovery.project_exists = false;
@@ -230,7 +314,8 @@ export async function buildCreateLinearProjectDryRunPlan(
   }
 
   if (projectId) {
-    const kickoff = await findKickoffIssues(linear, projectId, kickoffTitle);
+    const marker = factoryKickoffEpicMarker(projectId);
+    const kickoff = await findKickoffEpicByMarker(linear, projectId, marker);
     if (!kickoff.ok) {
       warnings.push(`Linear kickoff epic read failed: ${kickoff.error.error.message}`);
       steps.push({
@@ -244,8 +329,6 @@ export async function buildCreateLinearProjectDryRunPlan(
         identifier: kickoff.issues[0].identifier,
         url: kickoff.issues[0].url,
       };
-      linearDiscovery.kickoff_state_ok =
-        kickoff.issues[0].state?.name === KICKOFF_WORKFLOW_STATE_NAME;
       steps.push({
         id: "read_kickoff_epic",
         status: "done",
@@ -259,7 +342,7 @@ export async function buildCreateLinearProjectDryRunPlan(
 
   const stateResult = await findWorkflowStateId(
     linear,
-    DIDI_BUILD_LINEAR_TEAM_ID,
+    teamId,
     KICKOFF_WORKFLOW_STATE_NAME,
   );
   if (!stateResult.ok) {
@@ -299,7 +382,7 @@ export async function buildCreateLinearProjectDryRunPlan(
   }
 
   return {
-    status: "planned",
+    status: planStatus,
     dry_run: true,
     steps,
     warnings,

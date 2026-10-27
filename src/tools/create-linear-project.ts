@@ -1,36 +1,44 @@
 import type { ProjectFactoryEnv } from "../env.js";
 import { writeAuditEntry } from "../factory/audit.js";
 import {
-  DIDI_BUILD_LINEAR_TEAM_ID,
   KICKOFF_WORKFLOW_STATE_NAME,
   REPO_PROJECT_LABEL_GROUP_NAME,
   linearRepoProjectLabelName,
 } from "../factory/linear-constants.js";
 import {
-  buildLinearProjectDescription,
-  emptyProductDirectionBlock,
+  buildKickoffEpicDescription,
+  factoryKickoffEpicMarker,
   githubRepoUrl,
   kickoffEpicTitle,
   projectHasFactoryMarker,
+  validateProjectDescriptionLength,
 } from "../factory/linear-content.js";
 import { LinearClient } from "../linear/client.js";
 import { mapLinearFailure } from "../linear/linear-errors.js";
 import {
+  detectForeignProjectConflict,
+  detectRepoLabelConflict,
+} from "../linear/ownership.js";
+import {
+  COMMENT_CREATE_MUTATION,
   ENTITY_EXTERNAL_LINK_CREATE_MUTATION,
   ISSUE_CREATE_MUTATION,
   ISSUE_RELATION_CREATE_MUTATION,
-  ISSUE_UPDATE_MUTATION,
   PROJECT_CREATE_MUTATION,
   PROJECT_LABEL_CREATE_MUTATION,
   PROJECT_UPDATE_MUTATION,
   findIssueByIdentifier,
-  findKickoffIssues,
+  findKickoffEpicByMarker,
   findProjects,
   findWorkflowStateId,
   listProjectLabels,
+  resolveLinearTeamId,
+  teamScopedProjectNameFilter,
   type LinearIssueNode,
   type LinearProjectNode,
 } from "../linear/operations.js";
+import { kickoffLinkedToIdea } from "../linear/relations.js";
+import { buildFactoryRunCommentBody } from "../linear/run-comment.js";
 import { validateProjectName } from "../factory/naming.js";
 import {
   buildCreateLinearProjectDryRunPlan,
@@ -64,19 +72,6 @@ function factoryError(
   return { error: { code, message, step, retryable } };
 }
 
-function kickoffHasIdeaRelation(
-  issue: LinearIssueNode,
-  ideaIdentifier: string,
-): boolean {
-  const relations = issue.relations?.nodes ?? [];
-  return relations.some(
-    (r) =>
-      r.type === "related" &&
-      (r.relatedIssue?.identifier === ideaIdentifier ||
-        r.relatedIssue?.id === ideaIdentifier),
-  );
-}
-
 export async function createLinearProject(
   ctx: CreateLinearProjectContext,
   input: CreateLinearProjectInput,
@@ -86,6 +81,7 @@ export async function createLinearProject(
   const summary = input.summary.trim();
   const displayName = input.display_name.trim();
   const ideaIssue = input.idea_issue?.trim();
+  const approvalRef = input.approval_ref?.trim() ?? "";
   const steps: FactoryStep[] = [];
   const warnings: string[] = [];
   let auditStatus = "started";
@@ -96,7 +92,8 @@ export async function createLinearProject(
   const projectLabelName = linearRepoProjectLabelName(org, input.name);
   const kickoffTitle = kickoffEpicTitle(displayName);
   const repoUrl = githubRepoUrl(org, input.name);
-  const teamId = DIDI_BUILD_LINEAR_TEAM_ID;
+  let linearClient: LinearClient | undefined;
+  let kickoffForComment: LinearIssueNode | undefined;
 
   const finishAudit = () => {
     writeAuditEntry({
@@ -109,9 +106,9 @@ export async function createLinearProject(
         display_name: displayName,
         summary,
         idea_issue: ideaIssue,
-        approval_ref: input.approval_ref,
+        approval_ref: approvalRef,
       },
-      approval_ref: input.approval_ref,
+      approval_ref: approvalRef,
       status: auditStatus,
       resources: {
         project_url: auditResources.project_url,
@@ -138,10 +135,21 @@ export async function createLinearProject(
       auditStatus = "invalid_input";
       return factoryError("invalid_input", "display_name is required");
     }
-    if (!input.approval_ref?.trim()) {
+    if (!approvalRef) {
       auditStatus = "invalid_input";
       return factoryError("invalid_input", "approval_ref is required");
     }
+
+    const descriptionCheck = validateProjectDescriptionLength({
+      summary,
+      name: input.name,
+      org,
+    });
+    if (!descriptionCheck.ok) {
+      auditStatus = "invalid_input";
+      return factoryError("invalid_input", descriptionCheck.message);
+    }
+    const projectDescription = descriptionCheck.description;
 
     if (dryRun) {
       const plan = await buildCreateLinearProjectDryRunPlan(
@@ -152,6 +160,7 @@ export async function createLinearProject(
           summary,
           org,
           ideaIssue,
+          projectDescription,
         },
         { fetchImpl: ctx.fetchImpl, linear: ctx.linear },
       );
@@ -168,14 +177,25 @@ export async function createLinearProject(
       return factoryError("missing_secret", "PROJECT_FACTORY_LINEAR_API_KEY");
     }
 
-    const linear =
+    linearClient =
       ctx.linear ??
       new LinearClient({
         apiKey: ctx.env.PROJECT_FACTORY_LINEAR_API_KEY,
         fetchImpl: ctx.fetchImpl,
       });
 
-    const labelsRead = await listProjectLabels(linear, {
+    const teamResult = await resolveLinearTeamId(
+      linearClient,
+      ctx.env.PROJECT_FACTORY_LINEAR_TEAM,
+    );
+    if (!teamResult.ok) {
+      auditStatus = teamResult.error.error.code;
+      failedStep = teamResult.step;
+      return teamResult.error;
+    }
+    const teamId = teamResult.teamId;
+
+    const labelsRead = await listProjectLabels(linearClient, {
       name: { in: [REPO_PROJECT_LABEL_GROUP_NAME, projectLabelName] },
     });
     if (!labelsRead.ok) {
@@ -197,12 +217,35 @@ export async function createLinearProject(
       );
     }
 
+    const labelsByName = await listProjectLabels(linearClient, {
+      name: { eq: projectLabelName },
+    });
+    if (!labelsByName.ok) {
+      auditStatus = labelsByName.error.error.code;
+      failedStep = labelsByName.step;
+      return labelsByName.error;
+    }
+    const labelConflict = detectRepoLabelConflict(
+      labelsByName.labels,
+      projectLabelName,
+      repoGroup.id,
+    );
+    if (labelConflict) {
+      auditStatus = labelConflict.code;
+      failedStep = labelConflict.step;
+      return factoryError(
+        labelConflict.code,
+        labelConflict.message,
+        labelConflict.step,
+      );
+    }
+
     let repoLabel = labelsRead.labels.find(
       (l) => !l.isGroup && l.name === projectLabelName,
     );
     let repoLabelCreated = false;
     if (!repoLabel) {
-      const createLabel = await linear.request<{
+      const createLabel = await linearClient.request<{
         projectLabelCreate: {
           success: boolean;
           projectLabel?: { id: string; name: string };
@@ -249,7 +292,7 @@ export async function createLinearProject(
     let project: LinearProjectNode | undefined;
     let projectCreated = false;
     const byLabel = await findProjects(
-      linear,
+      linearClient,
       { labels: { id: { eq: repoLabel.id } } },
       "read_project_by_label",
     );
@@ -260,12 +303,22 @@ export async function createLinearProject(
     }
     if (byLabel.projects[0]) {
       project = byLabel.projects[0];
+      const conflict = detectForeignProjectConflict(
+        project,
+        input.name,
+        "read_project_by_label",
+      );
+      if (conflict) {
+        auditStatus = conflict.code;
+        failedStep = conflict.step;
+        return factoryError(conflict.code, conflict.message, conflict.step);
+      }
     }
 
     if (!project) {
       const byName = await findProjects(
-        linear,
-        { name: { eq: displayName } },
+        linearClient,
+        teamScopedProjectNameFilter(teamId, displayName),
         "read_project_by_name",
       );
       if (!byName.ok) {
@@ -275,34 +328,21 @@ export async function createLinearProject(
       }
       if (byName.projects[0]) {
         project = byName.projects[0];
-        if (!projectHasFactoryMarker(project.description, input.name)) {
-          auditStatus = "conflict_not_factory_owned";
-          failedStep = "read_project_by_name";
-          return factoryError(
-            "conflict_not_factory_owned",
-            `Linear project ${displayName} exists without the project-factory marker`,
-            "read_project_by_name",
-          );
+        const conflict = detectForeignProjectConflict(
+          project,
+          input.name,
+          "read_project_by_name",
+        );
+        if (conflict) {
+          auditStatus = conflict.code;
+          failedStep = conflict.step;
+          return factoryError(conflict.code, conflict.message, conflict.step);
         }
       }
-    } else if (!projectHasFactoryMarker(project.description, input.name)) {
-      auditStatus = "conflict_not_factory_owned";
-      failedStep = "read_project_by_label";
-      return factoryError(
-        "conflict_not_factory_owned",
-        `Linear project for label ${projectLabelName} exists without the project-factory marker`,
-        "read_project_by_label",
-      );
     }
 
-    const projectDescription = buildLinearProjectDescription({
-      summary,
-      name: input.name,
-      org,
-    });
-
     if (!project) {
-      const createProject = await linear.request<{
+      const createProject = await linearClient.request<{
         projectCreate: {
           success: boolean;
           project?: { id: string; name: string; url: string; description?: string };
@@ -344,32 +384,38 @@ export async function createLinearProject(
         !project.description ||
         !projectHasFactoryMarker(project.description, input.name);
       if (needsLabel || needsDescription) {
-        const update = await linear.request<{ projectUpdate: { success: boolean } }>(
-          PROJECT_UPDATE_MUTATION,
-          {
-            id: project.id,
-            input: {
-              ...(needsLabel ? { labelIds: [...labelIds, repoLabel.id] } : {}),
-              ...(needsDescription ? { description: projectDescription } : {}),
-            },
+        const updateDesc = validateProjectDescriptionLength({
+          summary,
+          name: input.name,
+          org,
+        });
+        if (!updateDesc.ok) {
+          auditStatus = "invalid_input";
+          return factoryError("invalid_input", updateDesc.message);
+        }
+        const update = await linearClient.request<{
+          projectUpdate: { success: boolean };
+        }>(PROJECT_UPDATE_MUTATION, {
+          id: project.id,
+          input: {
+            ...(needsLabel ? { labelIds: [...labelIds, repoLabel.id] } : {}),
+            ...(needsDescription ? { description: updateDesc.description } : {}),
           },
-        );
+        });
         if (!update.ok) {
           const mapped = mapLinearFailure(update.error, "linear_project");
           auditStatus = mapped.error.code;
           failedStep = "linear_project";
           return mapped;
         }
-        if (needsLabel || needsDescription) {
-          steps.push({ id: "linear_project_repair", status: "done" });
-        }
+        steps.push({ id: "linear_project_repair", status: "done" });
       }
     }
 
     const links = project.externalLinks?.nodes ?? [];
     const hasGithubLink = links.some((l) => l.url === repoUrl);
     if (!hasGithubLink) {
-      const linkCreate = await linear.request<{
+      const linkCreate = await linearClient.request<{
         entityExternalLinkCreate: { success: boolean };
       }>(ENTITY_EXTERNAL_LINK_CREATE_MUTATION, {
         input: {
@@ -390,7 +436,7 @@ export async function createLinearProject(
     }
 
     const stateResult = await findWorkflowStateId(
-      linear,
+      linearClient,
       teamId,
       KICKOFF_WORKFLOW_STATE_NAME,
     );
@@ -402,7 +448,7 @@ export async function createLinearProject(
 
     let ideaIssueNode: LinearIssueNode | null = null;
     if (ideaIssue) {
-      const ideaRead = await findIssueByIdentifier(linear, ideaIssue);
+      const ideaRead = await findIssueByIdentifier(linearClient, ideaIssue);
       if (!ideaRead.ok) {
         auditStatus = ideaRead.error.error.code;
         failedStep = ideaRead.step;
@@ -420,7 +466,12 @@ export async function createLinearProject(
       ideaIssueNode = ideaRead.issue;
     }
 
-    const kickoffRead = await findKickoffIssues(linear, project.id, kickoffTitle);
+    const kickoffMarker = factoryKickoffEpicMarker(project.id);
+    const kickoffRead = await findKickoffEpicByMarker(
+      linearClient,
+      project.id,
+      kickoffMarker,
+    );
     if (!kickoffRead.ok) {
       auditStatus = kickoffRead.error.error.code;
       failedStep = kickoffRead.step;
@@ -429,10 +480,10 @@ export async function createLinearProject(
 
     let kickoff = kickoffRead.issues[0];
     let kickoffCreated = false;
-    const kickoffDescription = emptyProductDirectionBlock();
+    const kickoffDescription = buildKickoffEpicDescription(project.id, summary);
 
     if (!kickoff) {
-      const createIssue = await linear.request<{
+      const createIssue = await linearClient.request<{
         issueCreate: {
           success: boolean;
           issue?: LinearIssueNode;
@@ -473,28 +524,13 @@ export async function createLinearProject(
         status: "skipped",
         detail: kickoff.identifier,
       });
-      if (kickoff.state?.id !== stateResult.stateId) {
-        const updateIssue = await linear.request<{ issueUpdate: { success: boolean } }>(
-          ISSUE_UPDATE_MUTATION,
-          {
-            id: kickoff.id,
-            input: { stateId: stateResult.stateId },
-          },
-        );
-        if (!updateIssue.ok) {
-          const mapped = mapLinearFailure(updateIssue.error, "kickoff_epic");
-          auditStatus = mapped.error.code;
-          failedStep = "kickoff_epic";
-          return mapped;
-        }
-        steps.push({ id: "kickoff_epic_state", status: "done" });
-      }
     }
 
+    kickoffForComment = kickoff;
+
     if (ideaIssueNode && kickoff) {
-      const hasRelation = kickoffHasIdeaRelation(kickoff, ideaIssueNode.identifier);
-      if (!hasRelation) {
-        const relation = await linear.request<{
+      if (!kickoffLinkedToIdea(kickoff, ideaIssueNode)) {
+        const relation = await linearClient.request<{
           issueRelationCreate: { success: boolean };
         }>(ISSUE_RELATION_CREATE_MUTATION, {
           input: {
@@ -550,6 +586,35 @@ export async function createLinearProject(
       dry_run: boolean;
     };
   } finally {
+    if (!dryRun && kickoffForComment && linearClient) {
+      const commentBody = buildFactoryRunCommentBody({
+        tool: "create_linear_project",
+        caller: ctx.caller,
+        approvalRef,
+        status: auditStatus,
+        projectUrl: auditResources.project_url,
+        projectLabel: projectLabelName,
+        kickoffIdentifier: kickoffForComment.identifier,
+        kickoffUrl: kickoffForComment.url,
+        steps,
+      });
+      const comment = await linearClient.request(COMMENT_CREATE_MUTATION, {
+        input: {
+          issueId: kickoffForComment.id,
+          body: commentBody,
+        },
+      });
+      if (!comment.ok) {
+        warnings.push("Failed to post factory run comment on kickoff epic");
+        steps.push({
+          id: "post_run_comment",
+          status: "failed",
+          detail: mapLinearFailure(comment.error, "post_run_comment").error.message,
+        });
+      } else {
+        steps.push({ id: "post_run_comment", status: "done" });
+      }
+    }
     finishAudit();
   }
 }

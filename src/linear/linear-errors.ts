@@ -9,7 +9,8 @@ export function mapLinearFailure(
   error: LinearError,
   step: string,
 ): { error: { code: string; message: string; step: string; retryable?: boolean } } {
-  if (error.code === "missing_secret") {
+  const code = error.code ?? "upstream_error";
+  if (code === "missing_secret") {
     return {
       error: {
         code: "missing_secret",
@@ -19,7 +20,7 @@ export function mapLinearFailure(
       },
     };
   }
-  if (error.code === "rate_limited" || error.status === 429) {
+  if (code === "rate_limited") {
     return {
       error: {
         code: "rate_limited",
@@ -29,17 +30,7 @@ export function mapLinearFailure(
       },
     };
   }
-  if (error.code === "permission_denied" || error.status === 403) {
-    return {
-      error: {
-        code: "permission_denied",
-        message: trimLinearErrorMessage(error),
-        step,
-        retryable: false,
-      },
-    };
-  }
-  if (error.status === 401) {
+  if (code === "permission_denied") {
     return {
       error: {
         code: "permission_denied",

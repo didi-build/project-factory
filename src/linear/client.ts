@@ -1,3 +1,5 @@
+import { isLinearMutation } from "./graphql-kind.js";
+
 export type LinearClientOptions = {
   apiKey: string;
   fetchImpl?: typeof fetch;
@@ -16,6 +18,52 @@ export type GraphQLResponse<T> = {
 };
 
 const MAX_RETRY_AFTER_MS = 10_000;
+
+function normalizeApiCode(
+  status: number,
+  apiCode: string | undefined,
+  apiMessage: string,
+): { code: string; retryable: boolean } {
+  const upper = apiCode?.toUpperCase();
+  if (upper === "RATELIMITED" || status === 429) {
+    return { code: "rate_limited", retryable: true };
+  }
+  if (status === 401) {
+    return { code: "missing_secret", retryable: false };
+  }
+  if (status === 403) {
+    return { code: "permission_denied", retryable: false };
+  }
+  if (status >= 500) {
+    return { code: "upstream_error", retryable: true };
+  }
+  const lower = apiMessage.toLowerCase();
+  if (
+    lower.includes("authentication") ||
+    lower.includes("not authenticated") ||
+    lower.includes("invalid api key")
+  ) {
+    return { code: "missing_secret", retryable: false };
+  }
+  if (lower.includes("not authorized") || lower.includes("forbidden")) {
+    return { code: "permission_denied", retryable: false };
+  }
+  return { code: "upstream_error", retryable: false };
+}
+
+function normalizeGraphqlError(
+  status: number,
+  message: string,
+  code?: string,
+): LinearError {
+  const normalized = normalizeApiCode(status, code, message);
+  return {
+    status,
+    code: normalized.code,
+    message,
+    retryable: normalized.retryable,
+  };
+}
 
 export class LinearClient {
   private readonly fetchImpl: typeof fetch;
@@ -40,7 +88,9 @@ export class LinearClient {
       };
     }
 
-    const maxAttempts = 3;
+    const mutation = isLinearMutation(query);
+    const maxAttempts = mutation ? 1 : 3;
+
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const response = await this.fetchImpl("https://api.linear.app/graphql", {
         method: "POST",
@@ -51,19 +101,7 @@ export class LinearClient {
         body: JSON.stringify({ query, variables }),
       });
 
-      const retryable = response.status >= 500 || response.status === 429;
       if (!response.ok) {
-        if (retryable && attempt < maxAttempts - 1) {
-          const retryAfter = Number.parseInt(
-            response.headers.get("Retry-After") ?? "",
-            10,
-          );
-          const delayMs = Number.isFinite(retryAfter)
-            ? Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS)
-            : (attempt + 1) * 500;
-          await new Promise((r) => setTimeout(r, delayMs));
-          continue;
-        }
         let apiCode: string | undefined;
         let apiMessage = response.statusText;
         try {
@@ -75,18 +113,25 @@ export class LinearClient {
         } catch {
           // ignore parse errors
         }
+        const normalized = normalizeApiCode(response.status, apiCode, apiMessage);
+        if (!mutation && normalized.retryable && attempt < maxAttempts - 1) {
+          const retryAfter = Number.parseInt(
+            response.headers.get("Retry-After") ?? "",
+            10,
+          );
+          const delayMs = Number.isFinite(retryAfter)
+            ? Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS)
+            : (attempt + 1) * 500;
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
         return {
           ok: false,
           error: {
             status: response.status,
-            code:
-              response.status === 401 || response.status === 403
-                ? "permission_denied"
-                : response.status === 429
-                  ? "rate_limited"
-                  : apiCode,
+            code: normalized.code,
             message: apiMessage,
-            retryable,
+            retryable: mutation ? false : normalized.retryable,
           },
         };
       }
@@ -99,6 +144,7 @@ export class LinearClient {
           ok: false,
           error: {
             status: response.status,
+            code: "upstream_error",
             message: "response was not valid JSON",
             retryable: false,
           },
@@ -109,18 +155,12 @@ export class LinearClient {
         const first = body.errors[0];
         const message = first.message ?? "GraphQL error";
         const code = first.extensions?.code;
-        const isAuth =
-          message.toLowerCase().includes("authentication") ||
-          message.toLowerCase().includes("not authorized");
-        return {
-          ok: false,
-          error: {
-            status: response.status,
-            code: isAuth ? "permission_denied" : code,
-            message,
-            retryable: false,
-          },
-        };
+        const err = normalizeGraphqlError(response.status, message, code);
+        if (!mutation && err.retryable && attempt < maxAttempts - 1) {
+          await new Promise((r) => setTimeout(r, (attempt + 1) * 500));
+          continue;
+        }
+        return { ok: false, error: err };
       }
 
       if (!body.data) {
@@ -128,6 +168,7 @@ export class LinearClient {
           ok: false,
           error: {
             status: response.status,
+            code: "upstream_error",
             message: "empty GraphQL data",
             retryable: false,
           },
@@ -141,6 +182,7 @@ export class LinearClient {
       ok: false,
       error: {
         status: 500,
+        code: "upstream_error",
         message: "max retries exceeded",
         retryable: true,
       },

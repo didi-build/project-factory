@@ -26,9 +26,20 @@ export type LinearIssueNode = {
   description?: string | null;
   state?: { id: string; name: string };
   relations?: {
-    nodes: { type: string; relatedIssue?: { id: string; identifier: string } | null }[];
+    nodes: {
+      type: string;
+      issue?: { id: string; identifier: string } | null;
+      relatedIssue?: { id: string; identifier: string } | null;
+    }[];
   };
 };
+
+const TEAMS_QUERY = `
+query Teams($filter: TeamFilter) {
+  teams(filter: $filter, first: 5) {
+    nodes { id name }
+  }
+}`;
 
 const PROJECT_LABELS_QUERY = `
 query ProjectLabels($filter: ProjectLabelFilter) {
@@ -77,9 +88,9 @@ query WorkflowStates($filter: WorkflowStateFilter) {
   }
 }`;
 
-const ISSUES_IN_PROJECT_QUERY = `
-query IssuesInProject($filter: IssueFilter) {
-  issues(filter: $filter, first: 10) {
+const KICKOFF_BY_MARKER_QUERY = `
+query KickoffByMarker($filter: IssueFilter) {
+  issues(filter: $filter, first: 5) {
     nodes {
       id
       identifier
@@ -90,6 +101,7 @@ query IssuesInProject($filter: IssueFilter) {
       relations {
         nodes {
           type
+          issue { id identifier }
           relatedIssue { id identifier }
         }
       }
@@ -105,8 +117,45 @@ query IssueById($id: String!) {
     title
     url
     state { id name }
+    relations {
+      nodes {
+        type
+        issue { id identifier }
+        relatedIssue { id identifier }
+      }
+    }
   }
 }`;
+
+export async function resolveLinearTeamId(
+  linear: LinearClient,
+  teamName: string,
+): Promise<
+  { ok: true; teamId: string } | { ok: false; error: FactoryError; step: string }
+> {
+  const result = await linear.request<{
+    teams: { nodes: { id: string; name: string }[] };
+  }>(TEAMS_QUERY, { filter: { name: { eq: teamName } } });
+  if (!result.ok) {
+    const mapped = mapLinearFailure(result.error, "read_linear_team");
+    return { ok: false, error: mapped, step: "read_linear_team" };
+  }
+  const team = result.data.teams.nodes[0];
+  if (!team) {
+    return {
+      ok: false,
+      error: {
+        error: {
+          code: "upstream_error",
+          message: `Linear team not found: ${teamName}`,
+          step: "read_linear_team",
+        },
+      },
+      step: "read_linear_team",
+    };
+  }
+  return { ok: true, teamId: team.id };
+}
 
 export async function listProjectLabels(
   linear: LinearClient,
@@ -137,15 +186,23 @@ export async function findProjects(
   const query = filter.labels ? PROJECTS_BY_LABEL_QUERY : PROJECTS_BY_NAME_QUERY;
   const result = await linear.request<{ projects: { nodes: LinearProjectNode[] } }>(
     query,
-    {
-      filter,
-    },
+    { filter },
   );
   if (!result.ok) {
     const mapped = mapLinearFailure(result.error, step);
     return { ok: false, error: mapped, step };
   }
   return { ok: true, projects: result.data.projects.nodes };
+}
+
+export function teamScopedProjectNameFilter(
+  teamId: string,
+  displayName: string,
+): Record<string, unknown> {
+  return {
+    name: { eq: displayName },
+    accessibleTeams: { id: { eq: teamId } },
+  };
 }
 
 export async function findWorkflowStateId(
@@ -184,20 +241,20 @@ export async function findWorkflowStateId(
   return { ok: true, stateId: state.id };
 }
 
-export async function findKickoffIssues(
+export async function findKickoffEpicByMarker(
   linear: LinearClient,
   projectId: string,
-  title: string,
+  marker: string,
 ): Promise<
   | { ok: true; issues: LinearIssueNode[] }
   | { ok: false; error: FactoryError; step: string }
 > {
   const result = await linear.request<{ issues: { nodes: LinearIssueNode[] } }>(
-    ISSUES_IN_PROJECT_QUERY,
+    KICKOFF_BY_MARKER_QUERY,
     {
       filter: {
         project: { id: { eq: projectId } },
-        title: { eq: title },
+        description: { contains: marker },
       },
     },
   );
@@ -268,18 +325,18 @@ mutation IssueCreate($input: IssueCreateInput!) {
   }
 }`;
 
-export const ISSUE_UPDATE_MUTATION = `
-mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
-  issueUpdate(id: $id, input: $input) {
-    success
-    issue { id identifier title url state { id name } }
-  }
-}`;
-
 export const ISSUE_RELATION_CREATE_MUTATION = `
 mutation IssueRelationCreate($input: IssueRelationCreateInput!) {
   issueRelationCreate(input: $input) {
     success
     issueRelation { id type }
+  }
+}`;
+
+export const COMMENT_CREATE_MUTATION = `
+mutation CommentCreate($input: CommentCreateInput!) {
+  commentCreate(input: $input) {
+    success
+    comment { id }
   }
 }`;
