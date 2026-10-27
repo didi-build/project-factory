@@ -16,6 +16,7 @@ export const EXPECTED_PROVISION_WRITE_INSTALLATION_TOKEN_PERMISSIONS = {
 
 export const EXPECTED_PRODUCTION_ENVIRONMENT_PUT_BODY = {
   reviewers: [{ type: "User", id: 4242 }],
+  can_admins_bypass: false,
   deployment_branch_policy: {
     protected_branches: false,
     custom_branch_policies: true,

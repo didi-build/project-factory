@@ -120,6 +120,11 @@ jobs:
         if: steps.install.outcome == 'success'
         run: npm run check
         continue-on-error: true
+      - name: Worker local health (wrangler dev, secret-free)
+        id: worker_health
+        if: steps.install.outcome == 'success' && steps.check.outcome == 'success'
+        run: npm run worker-health-local
+        continue-on-error: true
       - name: Publish test report (Checks tab)
         uses: dorny/test-reporter@df6247429542221bc30d46a036ee47af1102c451 # v2.7.0
         if: always() && github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && steps.install.outcome == 'success'
@@ -160,6 +165,6 @@ jobs:
           issue-number: ${{ github.event.pull_request.number }}
           edit-mode: replace
           body: ${{ steps.summary.outputs.body }}
-      - name: Fail job if install or check failed
-        if: steps.install.outcome != 'success' || steps.check.outcome != 'success'
+      - name: Fail job if install, check, or worker health failed
+        if: steps.install.outcome != 'success' || steps.check.outcome != 'success' || steps.worker_health.outcome == 'failure'
         run: exit 1

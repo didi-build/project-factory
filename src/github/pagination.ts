@@ -1,0 +1,1 @@
+export const GITHUB_API_LIST_MAX_PAGES = 100;

@@ -1,17 +1,7 @@
-import sodium from "libsodium-wrappers";
 import type { GitHubClient } from "./client.js";
 import { mapGithubFailure } from "./github-errors.js";
-
-export async function sealGitHubSecret(
-  plaintext: string,
-  publicKeyBase64: string,
-): Promise<string> {
-  await sodium.ready;
-  const key = sodium.from_base64(publicKeyBase64, sodium.base64_variants.ORIGINAL);
-  const message = sodium.from_string(plaintext);
-  const sealed = sodium.crypto_box_seal(message, key);
-  return sodium.to_base64(sealed, sodium.base64_variants.ORIGINAL);
-}
+import { sealGitHubSecret } from "./github-secret-seal.js";
+import { paginateGithubApiList } from "./paginate-list.js";
 
 export async function putRepoSecret(
   github: GitHubClient,
@@ -30,7 +20,7 @@ export async function putRepoSecret(
     };
   }
   const { key_id, key } = keyResult.data as { key_id: string; key: string };
-  const encrypted = await sealGitHubSecret(plaintext, key);
+  const encrypted = sealGitHubSecret(plaintext, key);
   const put = await github.request(
     "PUT",
     `/repos/${repoFull}/actions/secrets/${secretName}`,
@@ -63,7 +53,7 @@ export async function putEnvironmentSecret(
     };
   }
   const { key_id, key } = keyResult.data as { key_id: string; key: string };
-  const encrypted = await sealGitHubSecret(plaintext, key);
+  const encrypted = sealGitHubSecret(plaintext, key);
   const put = await github.request(
     "PUT",
     `/repos/${repoFull}/environments/${environment}/secrets/${secretName}`,
@@ -85,27 +75,44 @@ export async function listRepoSecretNames(
   | { ok: true; names: string[] }
   | { ok: false; error: ReturnType<typeof mapGithubFailure> }
 > {
-  const names: string[] = [];
-  let page = 1;
-  while (true) {
+  const listed = await paginateGithubApiList(async (page) => {
     const result = await github.request(
       "GET",
       `/repos/${repoFull}/actions/secrets?per_page=100&page=${page}`,
     );
     if (!result.ok) {
-      return { ok: false, error: mapGithubFailure(result.error, "list_repo_secrets") };
+      return { ok: false, error: result.error };
     }
     const secrets =
       result.data && typeof result.data === "object"
         ? ((result.data as { secrets?: { name: string }[] }).secrets ?? [])
         : [];
-    names.push(...secrets.map((s) => s.name));
-    if (secrets.length < 100) {
-      break;
+    return { ok: true, items: secrets };
+  }, 100);
+  if (!listed.ok) {
+    if ("pageLimitExceeded" in listed && listed.pageLimitExceeded) {
+      return {
+        ok: false,
+        error: mapGithubFailure(
+          {
+            status: 400,
+            code: "unknown",
+            message: "list page limit exceeded",
+            retryable: false,
+          },
+          "list_repo_secrets",
+        ),
+      };
     }
-    page += 1;
+    const ghError = (
+      listed as { error: { status: number; code?: string; message: string } }
+    ).error;
+    return {
+      ok: false,
+      error: mapGithubFailure({ ...ghError, retryable: false }, "list_repo_secrets"),
+    };
   }
-  return { ok: true, names: names.sort() };
+  return { ok: true, names: listed.items.map((s) => s.name).sort() };
 }
 
 export async function listEnvironmentSecretNames(
@@ -116,30 +123,47 @@ export async function listEnvironmentSecretNames(
   | { ok: true; names: string[] }
   | { ok: false; error: ReturnType<typeof mapGithubFailure> }
 > {
-  const names: string[] = [];
-  let page = 1;
-  while (true) {
+  const listed = await paginateGithubApiList(async (page) => {
     const result = await github.request(
       "GET",
       `/repos/${repoFull}/environments/${environment}/secrets?per_page=100&page=${page}`,
     );
     if (!result.ok) {
-      return {
-        ok: false,
-        error: mapGithubFailure(result.error, "list_environment_secrets"),
-      };
+      return { ok: false, error: result.error };
     }
     const secrets =
       result.data && typeof result.data === "object"
         ? ((result.data as { secrets?: { name: string }[] }).secrets ?? [])
         : [];
-    names.push(...secrets.map((s) => s.name));
-    if (secrets.length < 100) {
-      break;
+    return { ok: true, items: secrets };
+  }, 100);
+  if (!listed.ok) {
+    if ("pageLimitExceeded" in listed && listed.pageLimitExceeded) {
+      return {
+        ok: false,
+        error: mapGithubFailure(
+          {
+            status: 400,
+            code: "unknown",
+            message: "list page limit exceeded",
+            retryable: false,
+          },
+          "list_environment_secrets",
+        ),
+      };
     }
-    page += 1;
+    const ghError = (
+      listed as { error: { status: number; code?: string; message: string } }
+    ).error;
+    return {
+      ok: false,
+      error: mapGithubFailure(
+        { ...ghError, retryable: false },
+        "list_environment_secrets",
+      ),
+    };
   }
-  return { ok: true, names: names.sort() };
+  return { ok: true, names: listed.items.map((s) => s.name).sort() };
 }
 
 export async function repoSecretExists(

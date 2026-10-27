@@ -11,6 +11,7 @@ export type FactoryError = {
     step?: string;
     retryable?: boolean;
   };
+  warnings?: string[];
 };
 
 export type FactorySuccess = {

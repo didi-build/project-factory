@@ -4,9 +4,12 @@ import {
   GITHUB_ENV_PREVIEW,
   GITHUB_ENV_PRODUCTION,
 } from "../factory/provision-constants.js";
+import { GITHUB_API_LIST_MAX_PAGES } from "./pagination.js";
+import { paginateGithubApiList } from "./paginate-list.js";
 
 export type ProductionEnvironmentPutBody = {
   reviewers: { type: "User"; id: number }[];
+  can_admins_bypass: false;
   deployment_branch_policy: {
     protected_branches: false;
     custom_branch_policies: true;
@@ -48,6 +51,7 @@ export function buildProductionEnvironmentPutBody(
 ): ProductionEnvironmentPutBody {
   return {
     reviewers: [{ type: "User", id: reviewerUserId }],
+    can_admins_bypass: false,
     deployment_branch_policy: {
       protected_branches: false,
       custom_branch_policies: true,
@@ -121,8 +125,7 @@ async function listDeploymentBranchPolicies(
   | { ok: false; error: ReturnType<typeof mapGithubFailure> }
 > {
   const policies: DeploymentBranchPolicyItem[] = [];
-  let page = 1;
-  while (true) {
+  for (let page = 1; page <= GITHUB_API_LIST_MAX_PAGES; page += 1) {
     const result = await github.request(
       "GET",
       `/repos/${repoFull}/environments/${environment}/deployment-branch-policies?per_page=100&page=${page}`,
@@ -151,9 +154,22 @@ async function listDeploymentBranchPolicies(
         : [];
     policies.push(...chunk);
     if (chunk.length < 100) {
-      break;
+      return { ok: true, policies };
     }
-    page += 1;
+    if (page === GITHUB_API_LIST_MAX_PAGES) {
+      return {
+        ok: false,
+        error: mapGithubFailure(
+          {
+            status: 400,
+            code: "unknown",
+            message: "list page limit exceeded",
+            retryable: false,
+          },
+          "verify_production_environment",
+        ),
+      };
+    }
   }
   return { ok: true, policies };
 }
@@ -175,7 +191,7 @@ export async function resolveGithubUserId(
       error: {
         error: {
           code: "upstream_error",
-          message: "404 unknown",
+          message: `GitHub user ${login} not found`,
           step: "resolve_reviewer",
           retryable: false,
         },
@@ -326,27 +342,44 @@ export async function listEnvironmentNames(
   | { ok: true; names: string[] }
   | { ok: false; error: ReturnType<typeof mapGithubFailure> }
 > {
-  const names: string[] = [];
-  let page = 1;
-  while (true) {
+  const listed = await paginateGithubApiList(async (page) => {
     const result = await github.request(
       "GET",
       `/repos/${repoFull}/environments?per_page=100&page=${page}`,
     );
     if (!result.ok) {
-      return { ok: false, error: mapGithubFailure(result.error, "list_environments") };
+      return { ok: false, error: result.error };
     }
     const envs =
       result.data && typeof result.data === "object"
         ? ((result.data as { environments?: { name: string }[] }).environments ?? [])
         : [];
-    names.push(...envs.map((e) => e.name));
-    if (envs.length < 100) {
-      break;
+    return { ok: true, items: envs };
+  }, 100);
+  if (!listed.ok) {
+    if ("pageLimitExceeded" in listed && listed.pageLimitExceeded) {
+      return {
+        ok: false,
+        error: mapGithubFailure(
+          {
+            status: 400,
+            code: "unknown",
+            message: "list page limit exceeded",
+            retryable: false,
+          },
+          "list_environments",
+        ),
+      };
     }
-    page += 1;
+    const ghError = (
+      listed as { error: { status: number; code?: string; message: string } }
+    ).error;
+    return {
+      ok: false,
+      error: mapGithubFailure({ ...ghError, retryable: false }, "list_environments"),
+    };
   }
-  return { ok: true, names: names.sort() };
+  return { ok: true, names: listed.items.map((e) => e.name).sort() };
 }
 
 export { GITHUB_ENV_PREVIEW, GITHUB_ENV_PRODUCTION };

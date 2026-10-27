@@ -19,6 +19,7 @@ import {
   EXPECTED_PROVISION_WRITE_INSTALLATION_TOKEN_PERMISSIONS,
 } from "./expected-provision-payloads.js";
 import { fakePkcs8Pem } from "./github-mock.js";
+import { defaultWorkerRegistry, type WorkerRegistry } from "./worker-registry.js";
 
 const REVIEWER_LOGIN = "diademshoukralla";
 const REVIEWER_ID = 4242;
@@ -38,6 +39,7 @@ const CF_FACTORY_TOKEN = "fake-factory-cf-token-do-not-leak";
 
 let privateKeyPem: string;
 let githubPublicKey: string;
+let githubPrivateKey: string;
 let githubKeyId: string;
 
 beforeAll(async () => {
@@ -48,8 +50,30 @@ beforeAll(async () => {
     keyPair.publicKey,
     sodium.base64_variants.ORIGINAL,
   );
+  githubPrivateKey = sodium.to_base64(
+    keyPair.privateKey,
+    sodium.base64_variants.ORIGINAL,
+  );
   githubKeyId = "repo-key-1";
 });
+
+async function expectDecryptedGitHubSecret(
+  encryptedValue: string,
+  expectedPlaintext: string,
+): Promise<void> {
+  await sodium.ready;
+  const sealed = sodium.from_base64(encryptedValue, sodium.base64_variants.ORIGINAL);
+  const opened = sodium.crypto_box_seal_open(
+    sealed,
+    sodium.from_base64(githubPublicKey, sodium.base64_variants.ORIGINAL),
+    sodium.from_base64(githubPrivateKey, sodium.base64_variants.ORIGINAL),
+  );
+  if (!opened) {
+    throw new Error("decrypt failed: sealed blob did not round-trip");
+  }
+  expect(sodium.to_string(opened)).toBe(expectedPlaintext);
+  expect(encryptedValue).not.toBe(expectedPlaintext);
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -317,15 +341,6 @@ function githubHandlers(state: GithubState, requests: RecordedRequest[]) {
   };
 }
 
-type WorkerScriptRegistry = Map<string, string | undefined>;
-
-function defaultWorkerTags(): WorkerScriptRegistry {
-  return new Map([
-    ["demo-app", EXPECTED_DEMO_APP_PRODUCTION_SCRIPT_TAG],
-    ["demo-app-preview", EXPECTED_DEMO_APP_PREVIEW_SCRIPT_TAG],
-  ]);
-}
-
 function isWorkerScriptListRequest(url: string, method: string): boolean {
   if (method !== "GET" || !url.includes("/workers/scripts")) {
     return false;
@@ -334,13 +349,20 @@ function isWorkerScriptListRequest(url: string, method: string): boolean {
   return path.endsWith("/workers/scripts");
 }
 
-function cloudflareHandlers(
-  requests: RecordedRequest[],
-  workers: WorkerScriptRegistry,
-) {
+function cloudflareHandlers(requests: RecordedRequest[], registry: WorkerRegistry) {
+  const workers = registry.scriptTags;
   return (req: RecordedRequest) => {
     requests.push(req);
     if (req.url.endsWith("/accounts") && req.method === "GET") {
+      if (registry.cf.accountsStatus) {
+        return {
+          status: registry.cf.accountsStatus,
+          body: {
+            success: false,
+            errors: [{ message: "auth", code: registry.cf.accountsCode ?? 0 }],
+          },
+        };
+      }
       return {
         status: 200,
         body: { success: true, result: [{ id: "cf-account-1", name: "Didi Build" }] },
@@ -361,9 +383,10 @@ function cloudflareHandlers(
     if (req.url.includes("/workers/scripts/") && req.url.endsWith("/settings")) {
       const name = req.url.split("/workers/scripts/")[1]?.split("/")[0];
       if (name && workers.has(name)) {
+        const tags = registry.settingsTags.get(name) ?? ["project-factory"];
         return {
           status: 200,
-          body: { success: true, result: { tags: ["project-factory"] } },
+          body: { success: true, result: { tags } },
         };
       }
       return {
@@ -395,9 +418,21 @@ function cloudflareHandlers(
       };
     }
     if (req.url.includes("/tokens") && req.method === "GET") {
+      if (registry.cf.tokensListFails) {
+        return {
+          status: 500,
+          body: { success: false, errors: [{ message: "list failed", code: 1 }] },
+        };
+      }
       return { status: 200, body: { success: true, result: [] } };
     }
     if (req.url.includes("/tokens/") && req.method === "DELETE") {
+      if (registry.cf.revokeFails) {
+        return {
+          status: 503,
+          body: { success: false, errors: [{ message: "revoke failed", code: 2 }] },
+        };
+      }
       return { status: 200, body: { success: true, result: {} } };
     }
     if (req.url.endsWith("/tokens") && req.method === "POST") {
@@ -454,14 +489,14 @@ function defaultGithubState(overrides?: Partial<GithubState>): GithubState {
 describe("provisionCloudflare", () => {
   it("dry_run makes no Cloudflare or GitHub writes except installation token mint", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = defaultWorkerTags();
+    const registry = defaultWorkerRegistry();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const state = defaultGithubState();
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(
@@ -503,14 +538,14 @@ describe("provisionCloudflare", () => {
 
   it("creates workers, environments, tokens, and secrets on first run", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = defaultWorkerTags();
+    const registry = defaultWorkerRegistry();
     const state = defaultGithubState();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(
@@ -551,8 +586,8 @@ describe("provisionCloudflare", () => {
       EXPECTED_PRODUCTION_DEPLOYMENT_BRANCH_POLICY_BODY,
     );
 
-    expect(workers.has("demo-app")).toBe(true);
-    expect(workers.has("demo-app-preview")).toBe(true);
+    expect(registry.scriptTags.has("demo-app")).toBe(true);
+    expect(registry.scriptTags.has("demo-app-preview")).toBe(true);
     expect(state.repoSecrets).toEqual(
       expect.arrayContaining([
         REPO_SECRET_CLOUDFLARE_API_TOKEN_PREVIEW,
@@ -586,6 +621,36 @@ describe("provisionCloudflare", () => {
     );
     expect(d1r2).toHaveLength(0);
 
+    const accountSecretPut = requests.find(
+      (r) =>
+        r.method === "PUT" &&
+        r.url.includes(`/actions/secrets/${REPO_SECRET_CLOUDFLARE_ACCOUNT_ID}`),
+    );
+    const previewSecretPut = requests.find(
+      (r) =>
+        r.method === "PUT" &&
+        r.url.includes(`/actions/secrets/${REPO_SECRET_CLOUDFLARE_API_TOKEN_PREVIEW}`),
+    );
+    const productionSecretPut = requests.find(
+      (r) =>
+        r.method === "PUT" &&
+        r.url.includes(
+          `/environments/production/secrets/${ENV_SECRET_CLOUDFLARE_API_TOKEN_PRODUCTION}`,
+        ),
+    );
+    await expectDecryptedGitHubSecret(
+      (accountSecretPut?.body as { encrypted_value: string }).encrypted_value,
+      "cf-account-1",
+    );
+    await expectDecryptedGitHubSecret(
+      (previewSecretPut?.body as { encrypted_value: string }).encrypted_value,
+      MINTED_CF_TOKEN,
+    );
+    await expectDecryptedGitHubSecret(
+      (productionSecretPut?.body as { encrypted_value: string }).encrypted_value,
+      MINTED_CF_TOKEN,
+    );
+
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain(MINTED_CF_TOKEN);
     expect(serialized).not.toContain(INSTALLATION_TOKEN);
@@ -593,7 +658,7 @@ describe("provisionCloudflare", () => {
 
   it("fails closed with permission_denied when production environment GET returns 403", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = defaultWorkerTags();
+    const registry = defaultWorkerRegistry();
     const state = defaultGithubState({
       productionReview: {
         reviewerId: REVIEWER_ID,
@@ -606,7 +671,7 @@ describe("provisionCloudflare", () => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(
@@ -639,7 +704,7 @@ describe("provisionCloudflare", () => {
 
   it("fails closed with permission_denied when deployment-branch-policies GET returns 403", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = defaultWorkerTags();
+    const registry = defaultWorkerRegistry();
     const state = defaultGithubState({
       productionReview: {
         reviewerId: REVIEWER_ID,
@@ -652,7 +717,7 @@ describe("provisionCloudflare", () => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(
@@ -686,7 +751,7 @@ describe("provisionCloudflare", () => {
 
   it("revokes minted preview token when GitHub secret PUT fails", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = defaultWorkerTags();
+    const registry = defaultWorkerRegistry();
     const state = defaultGithubState({
       productionReview: {
         reviewerId: null,
@@ -699,7 +764,7 @@ describe("provisionCloudflare", () => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(
@@ -731,9 +796,232 @@ describe("provisionCloudflare", () => {
     expect(revokeAudit).toHaveLength(1);
   });
 
+  it("surfaces failed revoke in warnings and audit when secret PUT fails", async () => {
+    const requests: RecordedRequest[] = [];
+    const registry = defaultWorkerRegistry();
+    registry.cf.revokeFails = true;
+    const state = defaultGithubState({
+      productionReview: {
+        reviewerId: null,
+        branchPolicies: [],
+        failPreviewSecretPut: true,
+      },
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchImpl = buildFetch((req) => {
+      if (req.url.includes("api.github.com")) {
+        return githubHandlers(state, requests)(req);
+      }
+      return cloudflareHandlers(requests, registry)(req);
+    });
+
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-revoke-fail",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+
+    expect(result).toMatchObject({
+      error: { step: "put_preview_secret" },
+      warnings: [
+        expect.stringContaining("cf_revoke_token_failed for token id cf-token-id-1"),
+      ],
+    });
+    const revokeFailed = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes('"event":"token_revoke_failed"'));
+    expect(revokeFailed).toHaveLength(1);
+    expect(revokeFailed.join("\n")).toContain("cf-token-id-1");
+    expect(revokeFailed.join("\n")).not.toContain(MINTED_CF_TOKEN);
+  });
+
+  it("returns conflict_not_factory_owned for foreign Worker scripts", async () => {
+    const requests: RecordedRequest[] = [];
+    const registry = defaultWorkerRegistry();
+    registry.settingsTags.set("demo-app", ["not-factory"]);
+    const state = defaultGithubState();
+    const fetchImpl = buildFetch((req) => {
+      if (req.url.includes("api.github.com")) {
+        return githubHandlers(state, requests)(req);
+      }
+      return cloudflareHandlers(requests, registry)(req);
+    });
+
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-foreign-worker",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+
+    expect(result).toMatchObject({
+      error: { code: "conflict_not_factory_owned", step: "read_worker" },
+    });
+    const tokenMints = requests.filter(
+      (r) => r.url.endsWith("/tokens") && r.method === "POST",
+    );
+    expect(tokenMints).toHaveLength(0);
+    expect(state.repoSecrets).toHaveLength(0);
+    expect(state.productionSecrets).toHaveLength(0);
+  });
+
+  it("fails hard when Cloudflare token list fails (no mint)", async () => {
+    const requests: RecordedRequest[] = [];
+    const registry = defaultWorkerRegistry();
+    registry.cf.tokensListFails = true;
+    const state = defaultGithubState({
+      environments: ["preview", "production"],
+      productionReview: { reviewerId: REVIEWER_ID, branchPolicies: ["main"] },
+    });
+    const fetchImpl = buildFetch((req) => {
+      if (req.url.includes("api.github.com")) {
+        return githubHandlers(state, requests)(req);
+      }
+      return cloudflareHandlers(requests, registry)(req);
+    });
+
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-token-list-fail",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+
+    expect(result).toMatchObject({
+      error: { code: "upstream_error", step: "cf_list_tokens" },
+    });
+    expect(
+      requests.filter((r) => r.url.endsWith("/tokens") && r.method === "POST"),
+    ).toHaveLength(0);
+  });
+
+  it("maps Cloudflare 401 to missing_secret", async () => {
+    const registry = defaultWorkerRegistry();
+    registry.cf.accountsStatus = 401;
+    registry.cf.accountsCode = 1000;
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-cf-401",
+        caller: "test",
+        fetchImpl: buildFetch((req) =>
+          req.url.includes("api.github.com")
+            ? githubHandlers(defaultGithubState(), [])(req)
+            : cloudflareHandlers([], registry)(req),
+        ),
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({
+      error: { code: "missing_secret", message: "401 1000", step: "cf_accounts" },
+    });
+  });
+
+  it("maps Cloudflare 429 to rate_limited", async () => {
+    const registry = defaultWorkerRegistry();
+    registry.cf.accountsStatus = 429;
+    registry.cf.accountsCode = 1005;
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-cf-429",
+        caller: "test",
+        fetchImpl: buildFetch((req) =>
+          req.url.includes("api.github.com")
+            ? githubHandlers(defaultGithubState(), [])(req)
+            : cloudflareHandlers([], registry)(req),
+        ),
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({
+      error: { code: "rate_limited", retryable: true, step: "cf_accounts" },
+    });
+  });
+
+  it("maps Cloudflare 503 to upstream_error", async () => {
+    const registry = defaultWorkerRegistry();
+    registry.cf.accountsStatus = 503;
+    registry.cf.accountsCode = 0;
+    const result = await provisionCloudflare(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem,
+          PROJECT_FACTORY_CLOUDFLARE_API_TOKEN: CF_FACTORY_TOKEN,
+        },
+        requestId: "req-cf-503",
+        caller: "test",
+        fetchImpl: buildFetch((req) =>
+          req.url.includes("api.github.com")
+            ? githubHandlers(defaultGithubState(), [])(req)
+            : cloudflareHandlers([], registry)(req),
+        ),
+      },
+      {
+        name: "demo-app",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-846",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({
+      error: { code: "upstream_error", retryable: true, step: "cf_accounts" },
+    });
+  });
+
   it("fails closed when production environment read-back does not match", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = defaultWorkerTags();
+    const registry = defaultWorkerRegistry();
     const state = defaultGithubState({
       productionReview: { reviewerId: null, branchPolicies: [], failReadBack: true },
     });
@@ -741,7 +1029,7 @@ describe("provisionCloudflare", () => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(
@@ -777,16 +1065,15 @@ describe("provisionCloudflare", () => {
 
   it("fails closed without minting when worker script tag is missing", async () => {
     const requests: RecordedRequest[] = [];
-    const workers: WorkerScriptRegistry = new Map([
-      ["demo-app", undefined],
-      ["demo-app-preview", undefined],
-    ]);
+    const registry = defaultWorkerRegistry();
+    registry.scriptTags.set("demo-app", undefined);
+    registry.scriptTags.set("demo-app-preview", undefined);
     const state = defaultGithubState();
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(
@@ -819,7 +1106,7 @@ describe("provisionCloudflare", () => {
 
   it("rerun is idempotent and skips existing resources", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = defaultWorkerTags();
+    const registry = defaultWorkerRegistry();
     const state = defaultGithubState({
       repoSecrets: [
         REPO_SECRET_CLOUDFLARE_API_TOKEN_PREVIEW,
@@ -833,7 +1120,7 @@ describe("provisionCloudflare", () => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(
@@ -867,13 +1154,13 @@ describe("provisionCloudflare", () => {
 
   it("refuses non-factory repos", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = defaultWorkerTags();
+    const registry = defaultWorkerRegistry();
     const state = defaultGithubState({ factoryTopic: false });
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
         return githubHandlers(state, requests)(req);
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(
@@ -952,7 +1239,7 @@ describe("provisionCloudflare", () => {
 
   it("maps Cloudflare permission errors", async () => {
     const requests: RecordedRequest[] = [];
-    const workers = defaultWorkerTags();
+    const registry = defaultWorkerRegistry();
     const state = defaultGithubState();
     const fetchImpl = buildFetch((req) => {
       if (req.url.includes("api.github.com")) {
@@ -964,7 +1251,7 @@ describe("provisionCloudflare", () => {
           body: { success: false, errors: [{ message: "Forbidden" }] },
         };
       }
-      return cloudflareHandlers(requests, workers)(req);
+      return cloudflareHandlers(requests, registry)(req);
     });
 
     const result = await provisionCloudflare(

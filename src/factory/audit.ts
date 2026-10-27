@@ -55,3 +55,18 @@ export function writeTokenRevokeAudit(entry: TokenRevokeAuditInput): void {
     }),
   );
 }
+
+export type TokenRevokeFailedAuditInput = {
+  request_id: string;
+  token_id: string;
+  reason: string;
+};
+
+export function writeTokenRevokeFailedAudit(entry: TokenRevokeFailedAuditInput): void {
+  console.log(
+    JSON.stringify({
+      event: "token_revoke_failed",
+      ...entry,
+    }),
+  );
+}

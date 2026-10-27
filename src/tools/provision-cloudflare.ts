@@ -4,11 +4,13 @@ import {
   writeAuditEntry,
   writeTokenMintAudit,
   writeTokenRevokeAudit,
+  writeTokenRevokeFailedAudit,
 } from "../factory/audit.js";
 import { FACTORY_TOPIC } from "../factory/constants.js";
 import {
   deployTokenName,
   ENV_SECRET_CLOUDFLARE_API_TOKEN_PRODUCTION,
+  FACTORY_WORKER_TAG,
   previewWorkerName,
   productionWorkerName,
   REPO_SECRET_CLOUDFLARE_ACCOUNT_ID,
@@ -261,6 +263,21 @@ export async function provisionCloudflare(
       ["worker_production", prodWorker],
       ["worker_preview", prevWorker],
     ] as const) {
+      const owned = await cloudflare.assertWorkerFactoryOwned(workerName);
+      if (!owned.ok) {
+        if (owned.conflict) {
+          auditStatus = "conflict_not_factory_owned";
+          failedStep = "read_worker";
+          return factoryError(
+            "conflict_not_factory_owned",
+            `Worker ${workerName} exists without the ${FACTORY_WORKER_TAG} tag`,
+            "read_worker",
+          );
+        }
+        auditStatus = owned.error.error.code;
+        failedStep = stepId;
+        return owned.error;
+      }
       const ensured = await cloudflare.ensurePlaceholderWorker(workerName);
       if (!ensured.ok) {
         auditStatus = ensured.error.error.code;
@@ -439,11 +456,21 @@ export async function provisionCloudflare(
             token_id: mint.tokenId,
             reason: "put_preview_secret_failed",
           });
+        } else {
+          writeTokenRevokeFailedAudit({
+            request_id: ctx.requestId,
+            token_id: mint.tokenId,
+            reason: "put_preview_secret_failed",
+          });
+          warnings.push(
+            `cf_revoke_token_failed for token id ${mint.tokenId}: ${revoked.error.error.message}`,
+          );
         }
         auditStatus = put.error.error.code;
         failedStep = "put_preview_secret";
         return {
           error: { ...put.error.error, step: "put_preview_secret" },
+          warnings,
         };
       }
       created = true;
@@ -495,11 +522,21 @@ export async function provisionCloudflare(
             token_id: mint.tokenId,
             reason: "put_production_secret_failed",
           });
+        } else {
+          writeTokenRevokeFailedAudit({
+            request_id: ctx.requestId,
+            token_id: mint.tokenId,
+            reason: "put_production_secret_failed",
+          });
+          warnings.push(
+            `cf_revoke_token_failed for token id ${mint.tokenId}: ${revoked.error.error.message}`,
+          );
         }
         auditStatus = put.error.error.code;
         failedStep = "put_production_secret";
         return {
           error: { ...put.error.error, step: "put_production_secret" },
+          warnings,
         };
       }
       created = true;

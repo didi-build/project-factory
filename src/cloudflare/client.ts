@@ -7,6 +7,8 @@ import {
   INDIVIDUAL_WORKERS_EDITOR_PERMISSION_NAME,
   WORKERS_SCRIPTS_READ_PERMISSION_NAME,
 } from "./deploy-token-policy.js";
+import type { CfResult } from "./cf-result.js";
+import { paginateCloudflareList } from "./paginate.js";
 import { FACTORY_WORKER_TAG } from "../factory/provision-constants.js";
 import type { ProjectFactoryEnv } from "../env.js";
 
@@ -15,9 +17,6 @@ export type CfError = {
   message: string;
   retryable: boolean;
 };
-
-type CfResult<T> =
-  { ok: true; data: T } | { ok: false; status: number; message: string };
 
 const PLACEHOLDER_MODULE = "placeholder.mjs";
 const PLACEHOLDER_SOURCE = `export default {
@@ -59,8 +58,13 @@ async function cfJson<T>(
     };
   }
   if (!response.ok || !parsed.success) {
-    const message = parsed.errors?.[0]?.message ?? response.statusText;
-    return { ok: false, status: response.status, message };
+    const err = parsed.errors?.[0];
+    return {
+      ok: false,
+      status: response.status,
+      message: err?.message ?? response.statusText,
+      code: err?.code,
+    };
   }
   return { ok: true, data: parsed.result as T };
 }
@@ -70,34 +74,27 @@ async function cfJsonListAll<T>(
   path: string,
   fetchImpl: typeof fetch,
 ): Promise<CfResult<T[]>> {
-  const all: T[] = [];
-  let page = 1;
-  while (true) {
-    const separator = path.includes("?") ? "&" : "?";
-    const result = await cfJson<T[]>(
-      token,
-      "GET",
-      `${path}${separator}page=${page}&per_page=50`,
-      fetchImpl,
-    );
-    if (!result.ok) {
-      return result;
-    }
-    all.push(...result.data);
-    if (result.data.length < 50) {
-      return { ok: true, data: all };
-    }
-    page += 1;
-  }
+  const separator = path.includes("?") ? "&" : "?";
+  return paginateCloudflareList((page) =>
+    cfJson<T[]>(token, "GET", `${path}${separator}page=${page}&per_page=50`, fetchImpl),
+  );
+}
+
+export function trimCfErrorMessage(status: number, code?: number | string): string {
+  const c = code !== undefined && code !== null ? String(code) : "unknown";
+  return `${status} ${c}`;
 }
 
 function mapCfFailure(
-  result: { status: number; message: string },
+  result: { status: number; message: string; code?: number },
   step: string,
 ): {
   error: { code: string; message: string; step: string; retryable: boolean };
 } {
-  const message = `${result.status} ${result.message}`;
+  const message = trimCfErrorMessage(result.status, result.code);
+  if (result.status === 401) {
+    return { error: { code: "missing_secret", message, step, retryable: false } };
+  }
   if (result.status === 403) {
     return {
       error: { code: "permission_denied", message, step, retryable: false },
@@ -210,6 +207,23 @@ export class CloudflareFactoryClient {
       return { ok: true, exists: false };
     }
     return { ok: false, error: mapCfFailure(settings, "cf_worker_settings") };
+  }
+
+  async assertWorkerFactoryOwned(
+    workerName: string,
+  ): Promise<
+    | { ok: true }
+    | { ok: false; conflict: true; workerName: string }
+    | { ok: false; conflict: false; error: ReturnType<typeof mapCfFailure> }
+  > {
+    const existing = await this.workerExists(workerName);
+    if (!existing.ok) {
+      return { ok: false, conflict: false, error: existing.error };
+    }
+    if (existing.exists && !(existing.tags ?? []).includes(FACTORY_WORKER_TAG)) {
+      return { ok: false, conflict: true, workerName };
+    }
+    return { ok: true };
   }
 
   async resolveWorkerScriptTag(
@@ -375,14 +389,14 @@ export class CloudflareFactoryClient {
     if (found) {
       return {
         ok: false,
-        error: mapCfFailure(
-          {
-            status: 409,
-            message:
-              "deploy token already exists but value is not retrievable; set GitHub secret manually or delete the token",
+        error: {
+          error: {
+            code: "deploy_token_exists",
+            message: `delete Cloudflare API token id ${found.id} and retry`,
+            step: "cf_mint_token",
+            retryable: false,
           },
-          "cf_mint_token",
-        ),
+        },
       };
     }
 
