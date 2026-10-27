@@ -9,7 +9,10 @@ export function mapGithubFailure(
   error: GitHubError,
   step: string,
 ): { error: { code: string; message: string; step: string; retryable?: boolean } } {
-  const message = trimGithubErrorMessage(error);
+  let message = trimGithubErrorMessage(error);
+  if (error.status === 400 && error.message) {
+    message = error.message;
+  }
   if (error.code === "missing_secret") {
     return {
       error: {

@@ -25,6 +25,7 @@
     "init-project": "node scripts/init-project.mjs",
     "repo-settings": "node scripts/repo-settings.mjs",
     "verify-action-pins": "node scripts/verify-action-pins.mjs",
+    "worker-health-local": "node scripts/worker-health-local.mjs",
     "wrangler": "wrangler",
     "prepare": "husky"
   },
@@ -47,6 +48,7 @@
     "eslint": "9.37.0",
     "globals": "16.5.0",
     "husky": "9.1.7",
+    "libsodium-wrappers": "0.7.15",
     "lint-staged": "16.4.0",
     "prettier": "3.9.10",
     "secretlint": "10.2.2",
@@ -57,8 +59,10 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
+    "@noble/hashes": "2.4.0",
     "agents": "0.30.1",
     "jose": "6.1.0",
+    "tweetnacl": "1.0.3",
     "zod": "4.6.7"
   }
 }

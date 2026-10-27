@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ProjectFactoryEnv } from "../env.js";
 import { createLinearProject } from "../tools/create-linear-project.js";
 import { createProjectRepo } from "../tools/create-project-repo.js";
+import { provisionCloudflare } from "../tools/provision-cloudflare.js";
 import { projectStatus } from "../tools/project-status.js";
 
 export function createFactoryMcpServer(
@@ -67,6 +68,32 @@ export function createFactoryMcpServer(
           display_name: input.display_name,
           summary: input.summary,
           idea_issue: input.idea_issue,
+          approval_ref: input.approval_ref,
+          dry_run: input.dry_run,
+        },
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "provision_cloudflare",
+    {
+      description:
+        "Create or converge Cloudflare Workers and GitHub deploy secrets for a factory-owned repo",
+      inputSchema: {
+        name: z.string(),
+        approval_ref: z.string().min(1),
+        dry_run: z.boolean().optional(),
+      },
+    },
+    async (input) => {
+      const result = await provisionCloudflare(
+        { env, requestId, caller },
+        {
+          name: input.name,
           approval_ref: input.approval_ref,
           dry_run: input.dry_run,
         },

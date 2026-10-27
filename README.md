@@ -51,7 +51,16 @@ Remote MCP server on Cloudflare Worker `project-factory` (see [ADR 0004](./docs/
 - **Auth:** `Authorization: Bearer <PROJECT_FACTORY_BEARER_TOKEN>` on every request except `/health`
 - **Traceability:** `X-Factory-Caller: <bot name>` (recorded in audit logs)
 
-Tools in this slice: `create_project_repo`, `create_linear_project`, `project_status`.
+Tools in this slice: `create_project_repo`, `create_linear_project`, `provision_cloudflare`, `project_status`.
+
+### `provision_cloudflare` (Step 3)
+
+Converges Cloudflare Workers and GitHub Actions deploy credentials for a factory-owned repo (`project-factory` topic). Defaults to `dry_run: true`; pass `dry_run: false` with Diadem's `approval_ref` to apply.
+
+- **Workers:** production `<name>` and preview `<name>-preview` placeholder scripts (tag `project-factory`, workers.dev enabled). PR preview deploys in Launchpad still use the `pr-<n>` name pattern with `CLOUDFLARE_API_TOKEN_PREVIEW`.
+- **GitHub:** `preview` and `production` environments; repository secrets `CLOUDFLARE_API_TOKEN_PREVIEW` and `CLOUDFLARE_ACCOUNT_ID`; production environment secret `CLOUDFLARE_API_TOKEN_PRODUCTION` (Worker-scoped Editor tokens minted by the factory, never logged).
+- **Secrets:** `PROJECT_FACTORY_CLOUDFLARE_API_TOKEN` on Worker `project-factory` (Workers Scripts Edit plus Account API Tokens Edit for minting only). No D1, R2, DNS, or routes.
+- **Config:** `PROJECT_FACTORY_GH_PRODUCTION_REVIEWER` in `wrangler.jsonc` vars sets the required reviewer on new repos' `production` environment.
 
 ### Worker secrets (reference)
 

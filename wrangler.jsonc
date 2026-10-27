@@ -14,5 +14,6 @@
     "PROJECT_FACTORY_GH_ORG": "didi-build",
     "PROJECT_FACTORY_TEMPLATE_REPO": "didi-build/launchpad",
     "PROJECT_FACTORY_LINEAR_TEAM": "Didi Build",
+    "PROJECT_FACTORY_GH_PRODUCTION_REVIEWER": "diademshoukralla",
   },
 }

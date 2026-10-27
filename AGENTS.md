@@ -49,18 +49,19 @@ This file is the single source of truth for how agents work in this repository. 
 
 ## Commands
 
-| Script                       | Purpose                                                                                                                                                                |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run check`              | Conflict markers, format, lint, typecheck, test, secret scan, placeholders, attribution, nodrift (when `.nodrift/manifest.json` or `docs/privacy/data-map.yml` exists) |
-| `npm run nodrift`            | `@didi-build/nodrift check` when `.nodrift/manifest.json` or `docs/privacy/data-map.yml` exists; skipped otherwise                                                     |
-| `npm run lint`               | ESLint                                                                                                                                                                 |
-| `npm run format`             | Prettier write                                                                                                                                                         |
-| `npm run format:check`       | Prettier check                                                                                                                                                         |
-| `npm run typecheck`          | `tsc --noEmit`                                                                                                                                                         |
-| `npm run test`               | Vitest (CI uses JUnit output)                                                                                                                                          |
-| `npm run secrets`            | Secretlint                                                                                                                                                             |
-| `npm run secret-usage`       | Fail if `BOOTSTRAP_TOKEN` appears outside `bootstrap.yml` workflows                                                                                                    |
-| `npm run init-project`       | Replace `{{…}}` placeholders; optionally run `nodrift init` when the project collects personal data                                                                    |
-| `npm run repo-settings`      | Dry-run, `--apply`, or `--verify` recommended GitHub repo settings                                                                                                     |
-| `npm run verify-action-pins` | Verify each pinned action SHA matches its version comment (`# vX.Y.Z`)                                                                                                 |
-| `npm run wrangler`           | Wrangler CLI (local dev; production deploy uses GitHub Actions)                                                                                                        |
+| Script                        | Purpose                                                                                                                                                                |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run check`               | Conflict markers, format, lint, typecheck, test, secret scan, placeholders, attribution, nodrift (when `.nodrift/manifest.json` or `docs/privacy/data-map.yml` exists) |
+| `npm run nodrift`             | `@didi-build/nodrift check` when `.nodrift/manifest.json` or `docs/privacy/data-map.yml` exists; skipped otherwise                                                     |
+| `npm run lint`                | ESLint                                                                                                                                                                 |
+| `npm run format`              | Prettier write                                                                                                                                                         |
+| `npm run format:check`        | Prettier check                                                                                                                                                         |
+| `npm run typecheck`           | `tsc --noEmit`                                                                                                                                                         |
+| `npm run test`                | Vitest (CI uses JUnit output)                                                                                                                                          |
+| `npm run secrets`             | Secretlint                                                                                                                                                             |
+| `npm run secret-usage`        | Fail if `BOOTSTRAP_TOKEN` appears outside `bootstrap.yml` workflows                                                                                                    |
+| `npm run init-project`        | Replace `{{…}}` placeholders; optionally run `nodrift init` when the project collects personal data                                                                    |
+| `npm run repo-settings`       | Dry-run, `--apply`, or `--verify` recommended GitHub repo settings                                                                                                     |
+| `npm run verify-action-pins`  | Verify each pinned action SHA matches its version comment (`# vX.Y.Z`)                                                                                                 |
+| `npm run worker-health-local` | Boot `wrangler dev --local`, assert `GET /health` returns `{ ok: true }`, then shut down (secret-free; used in CI)                                                     |
+| `npm run wrangler`            | Wrangler CLI (local dev; production deploy uses GitHub Actions)                                                                                                        |

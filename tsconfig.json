@@ -18,6 +18,7 @@
   "include": [
     "src/**/*.ts",
     "test/**/*.ts",
+    "test/**/*.d.ts",
     "scripts/lib/repo-settings-target.mjs",
     "scripts/lib/launchpad-attribution.mjs",
     "scripts/lib/gh-api-errors.mjs",
