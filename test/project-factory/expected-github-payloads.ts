@@ -28,6 +28,11 @@ export const EXPECTED_BRANCH_PROTECTION_PUT_BODY = {
 
 export const EXPECTED_FACTORY_LABEL_POST_BODIES = [
   {
+    name: "privileged-change",
+    color: "B60205",
+    description: "PR touches privileged deploy or workflow paths (review required)",
+  },
+  {
     name: "privileged-change-reviewed",
     color: "0E8A16",
     description: "Maintainer reviewed privileged-change warning",

@@ -1,0 +1,27 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`privileged-change-comment-body (unit) > flagged state: marker first, high severity before files, snapshot 1`] = `
+"<!-- project-factory-privileged-change -->
+
+## ⚠️ Privileged change detected
+
+This PR touches deploy infrastructure, workflows, or other paths that can reach privileged credentials. A maintainer should review before merge.
+
+### High severity
+- .github/workflows/evil.yml: environment reference: migrate-nonprod
+- New workflow file: .github/workflows/evil.yml
+
+### Changed privileged files
+- \`.github/workflows/evil.yml\`
+
+### Workflow references
+
+**\`.github/workflows/evil.yml\`**
+- Triggers: workflow_dispatch
+- Environments: migrate-nonprod
+- Permissions: contents
+- Action owners: actions
+
+After review, a maintainer adds the \`privileged-change-reviewed\` label to clear the required check.
+"
+`;

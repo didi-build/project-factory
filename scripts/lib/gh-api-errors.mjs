@@ -4,6 +4,14 @@ export function parseGhHttpStatus(stderr) {
   return match ? Number(match[1]) : null;
 }
 
+/**
+ * @param {string} stderr
+ * @returns {boolean}
+ */
+export function shouldIgnoreIssueLabelDeleteError(stderr) {
+  return parseGhHttpStatus(stderr) === 404;
+}
+
 /** @param {number | null} httpStatus @param {string} stderr */
 export function branchProtectionReadFailureReason(httpStatus, stderr) {
   if (httpStatus === 404) {

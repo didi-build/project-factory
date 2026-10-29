@@ -1,0 +1,9 @@
+name: Example
+on:
+  pull_request_target:
+    types: [opened]
+jobs:
+  job:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
