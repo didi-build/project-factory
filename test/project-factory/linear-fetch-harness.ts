@@ -30,6 +30,8 @@ export type HarnessState = {
   ideaIssue?: boolean;
   ideaHasRelationToKickoff?: boolean;
   ideaRelationType?: string;
+  /** Factory-owned project exists but labels.nodes omits the repo label id. */
+  existingProjectMissingRepoLabel?: boolean;
   failMutation?: string;
   /** When set, queries containing this substring return HTTP 502. */
   failRead?: string;
@@ -43,13 +45,19 @@ export const LINEAR_RAW_GRAPHQL_200_LEAK_MARKER =
 const LABEL_ID = "label-demo-uuid";
 const PROJECT_ID = "project-demo-uuid";
 
-function toApiProject(node: HarnessProjectNode, labelId: string) {
+function toApiProject(
+  node: HarnessProjectNode,
+  labelId: string,
+  options?: { omitRepoLabelOnProject?: boolean },
+) {
   return {
     id: node.id,
     name: node.name,
     url: node.url,
     description: node.description,
-    labels: { nodes: [{ id: labelId, name: "didi-build/demo-app" }] },
+    labels: options?.omitRepoLabelOnProject
+      ? { nodes: [] }
+      : { nodes: [{ id: labelId, name: "didi-build/demo-app" }] },
     externalLinks: {
       nodes: node.factoryMarker
         ? [
@@ -172,13 +180,17 @@ export function createHarnessClient(
       }
       if (q.includes("ProjectsByLabel")) {
         const nodes = resolveProjectNodes(state, true).map((p) =>
-          toApiProject(p, LABEL_ID),
+          toApiProject(p, LABEL_ID, {
+            omitRepoLabelOnProject: state.existingProjectMissingRepoLabel,
+          }),
         );
         return new Response(JSON.stringify({ data: { projects: { nodes } } }));
       }
       if (q.includes("ProjectsByName")) {
         const nodes = resolveProjectNodes(state, false).map((p) =>
-          toApiProject(p, LABEL_ID),
+          toApiProject(p, LABEL_ID, {
+            omitRepoLabelOnProject: state.existingProjectMissingRepoLabel,
+          }),
         );
         return new Response(JSON.stringify({ data: { projects: { nodes } } }));
       }
@@ -289,7 +301,7 @@ export function createHarnessClient(
           }),
         );
       }
-      if (q.includes("ProjectCreate")) {
+      if (/mutation ProjectCreate\b/.test(q)) {
         return new Response(
           JSON.stringify({
             data: {
@@ -304,6 +316,11 @@ export function createHarnessClient(
               },
             },
           }),
+        );
+      }
+      if (/mutation ProjectUpdate\b/.test(q)) {
+        return new Response(
+          JSON.stringify({ data: { projectUpdate: { success: true } } }),
         );
       }
       if (q.includes("EntityExternalLinkCreate")) {
@@ -341,7 +358,7 @@ export function createHarnessClient(
           }),
         );
       }
-      if (q.includes("IssueUpdate")) {
+      if (/mutation IssueUpdate\b/.test(q)) {
         return new Response(
           JSON.stringify({ data: { issueUpdate: { success: true } } }),
         );

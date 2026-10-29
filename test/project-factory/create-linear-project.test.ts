@@ -6,6 +6,7 @@ import { detectRepoLabelConflict } from "../../src/linear/ownership.js";
 import { createFactoryMcpServer } from "../../src/mcp/create-server.js";
 import * as createLinearProjectModule from "../../src/tools/create-linear-project.js";
 import { createLinearProject } from "../../src/tools/create-linear-project.js";
+import * as linearContentModule from "../../src/factory/linear-content.js";
 import {
   createHarnessClient,
   defaultHarnessProject,
@@ -95,6 +96,9 @@ const validMcpLinearInput = {
 };
 
 type McpCreateLinearProjectTool = {
+  inputSchema: {
+    parse: (input: Record<string, unknown>) => Record<string, unknown>;
+  };
   executor: (
     input: Record<string, unknown>,
   ) => Promise<{ content: { text: string }[] }>;
@@ -157,6 +161,31 @@ describe("createLinearProject MCP handler (create-server registration)", () => {
     };
     expect(payload).toMatchObject({ status: "planned", dry_run: true });
     expect(mutationCalls(calls)).toHaveLength(0);
+  });
+
+  it("rejects empty summary via MCP schema before Linear is called", async () => {
+    const calls: GraphqlCall[] = [];
+    const response = await runRegisteredMcpCreateLinearProject(
+      "mcp-empty-summary",
+      { ...validMcpLinearInput, summary: "" },
+      calls,
+    );
+    const payload = JSON.parse(response.content[0].text) as {
+      error?: { code: string };
+    };
+    expect(payload).toMatchObject({ error: { code: "invalid_input" } });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects empty summary in create_linear_project MCP inputSchema", () => {
+    const server = createFactoryMcpServer(env, "mcp-schema-summary", "mcp-caller");
+    const tool = getCreateLinearProjectMcpTool(server);
+    expect(() =>
+      tool.inputSchema.parse({
+        ...validMcpLinearInput,
+        summary: "",
+      }),
+    ).toThrow();
   });
 });
 
@@ -269,6 +298,11 @@ describe("createLinearProject", () => {
       baseInput,
     );
 
+    const teamsQuery = calls.find((c) => c.query.includes("query Teams"));
+    expect(teamsQuery?.variables).toEqual({
+      filter: { name: { eq: "Didi Build" } },
+    });
+
     const projectCreate = calls.find((c) => c.query.includes("ProjectCreate"));
     expect(projectCreate?.variables).toEqual({
       input: {
@@ -296,6 +330,79 @@ describe("createLinearProject", () => {
         team: { id: { eq: TEAM_ID } },
         name: { eq: "Ready for CTO breakdown" },
       },
+    });
+
+    const kickoffQuery = calls.find((c) => c.query.includes("KickoffByMarker"));
+    expect(kickoffQuery?.variables).toEqual({
+      filter: {
+        project: { id: { eq: PROJECT_ID } },
+        description: { contains: `<!-- project-factory:epic:${PROJECT_ID} -->` },
+      },
+    });
+  });
+
+  it("repairs an existing project missing the repo label on labels.nodes", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+        existingProjectMissingRepoLabel: true,
+      },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "repair-label", caller: "test", linear },
+      baseInput,
+    );
+    expect(result).toMatchObject({ status: "repaired" });
+    const projectUpdate = calls.find((c) => c.query.includes("ProjectUpdate"));
+    expect(projectUpdate?.variables).toMatchObject({
+      id: PROJECT_ID,
+      input: { labelIds: ["label-demo-uuid"] },
+    });
+    const updateInput = (
+      projectUpdate?.variables as {
+        input?: { description?: string; labelIds?: string[] };
+      }
+    )?.input;
+    expect(updateInput?.description).toBeUndefined();
+    if (!("steps" in result)) {
+      throw new Error("expected success result");
+    }
+    expect(
+      result.steps.some((s) => s.id === "linear_project_repair" && s.status === "done"),
+    ).toBe(true);
+  });
+
+  it("repairs project description when factory marker check fails after discovery", async () => {
+    let markerChecks = 0;
+    const markerSpy = vi
+      .spyOn(linearContentModule, "projectHasFactoryMarker")
+      .mockImplementation(() => {
+        markerChecks += 1;
+        return markerChecks === 1;
+      });
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+      },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "repair-description", caller: "test", linear },
+      baseInput,
+    );
+    markerSpy.mockRestore();
+    expect(result).toMatchObject({ status: "repaired" });
+    const projectUpdate = calls.find((c) => c.query.includes("ProjectUpdate"));
+    expect(projectUpdate?.variables).toMatchObject({
+      id: PROJECT_ID,
+      input: { description: EXPECTED_PROJECT_DESCRIPTION },
     });
   });
 
@@ -684,7 +791,7 @@ describe("createLinearProject", () => {
       { env, requestId: "idea-link", caller: "test", linear },
       { ...baseInput, idea_issue: "DIDI-830" },
     );
-    expect(calls.some((c) => c.query.includes("IssueUpdate"))).toBe(false);
+    expect(calls.some((c) => /\bissueUpdate\b/i.test(c.query))).toBe(false);
     const relation = calls.find((c) => c.query.includes("IssueRelationCreate"));
     expect(relation?.variables).toEqual({
       input: {
