@@ -10,7 +10,6 @@ import {
   factoryKickoffEpicMarker,
   githubRepoUrl,
   kickoffEpicTitle,
-  projectHasFactoryMarker,
   validateProjectDescriptionLength,
 } from "../factory/linear-content.js";
 import { LinearClient } from "../linear/client.js";
@@ -351,26 +350,13 @@ export async function createLinearProject(
       steps.push({ id: "linear_project", status: "skipped", detail: project.url });
       const labelIds = project.labels?.nodes.map((l) => l.id) ?? [];
       const needsLabel = !labelIds.includes(repoLabel.id);
-      const needsDescriptionRepair =
-        !project.description ||
-        !projectHasFactoryMarker(project.description, input.name);
-      if (needsLabel || needsDescriptionRepair) {
-        const updateDesc = validateProjectDescriptionLength({
-          summary,
-          name: input.name,
-          org,
-        });
-        if (!updateDesc.ok) {
-          auditStatus = "invalid_input";
-          return factoryError("invalid_input", updateDesc.message);
-        }
+      if (needsLabel) {
         const update = await linearClient.request<{
           projectUpdate: { success: boolean };
         }>(PROJECT_UPDATE_MUTATION, {
           id: project.id,
           input: {
-            ...(needsLabel ? { labelIds: [...labelIds, repoLabel.id] } : {}),
-            ...(needsDescriptionRepair ? { description: updateDesc.description } : {}),
+            labelIds: [...labelIds, repoLabel.id],
           },
         });
         if (!update.ok) {
