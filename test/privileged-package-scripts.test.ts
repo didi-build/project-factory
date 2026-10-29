@@ -73,7 +73,9 @@ describe("privileged-package-scripts (unit)", () => {
       headSha,
     );
     expect(result.flagPackageJson).toBe(true);
-    expect(result.findings[0]?.message).toContain("base ref");
+    expect(result.findings[0]?.message).toBe(
+      "package.json: could not read at base ref (HTTP 404)",
+    );
   });
 
   it("flags fail closed when JSON parse fails at base ref", () => {
@@ -101,7 +103,9 @@ describe("privileged-package-scripts (unit)", () => {
       headSha,
     );
     expect(result.flagPackageJson).toBe(true);
-    expect(result.findings[0]?.message).toContain("head ref");
+    expect(result.findings[0]?.message).toBe(
+      "package.json: could not read at head ref (HTTP 404)",
+    );
   });
 
   it("flags fail closed when JSON parse fails at head ref", () => {
@@ -131,6 +135,22 @@ describe("privileged-package-scripts (unit)", () => {
     expect(result.flagPackageJson).toBe(true);
     expect(result.findings[0]?.message).toContain(
       "scripts is not an object at head ref",
+    );
+  });
+
+  it("flags fail closed when scripts is not an object at base ref", () => {
+    const result = assessPackageJsonScriptsChange(
+      [{ filename: "package.json", status: "modified" }],
+      (ref) =>
+        ref === baseSha
+          ? { ok: true, text: '{"scripts":[]}' }
+          : { ok: true, text: '{"scripts":{}}' },
+      baseSha,
+      headSha,
+    );
+    expect(result.flagPackageJson).toBe(true);
+    expect(result.findings[0]?.message).toBe(
+      "package.json: scripts is not an object at base ref",
     );
   });
 
@@ -169,7 +189,9 @@ describe("privileged-package-scripts (unit)", () => {
       headSha,
     );
     expect(result.flagPackageJson).toBe(true);
-    expect(result.findings[0]?.message).toContain("base ref");
+    expect(result.findings[0]?.message).toBe(
+      "package.json: could not read at base ref (HTTP 404)",
+    );
   });
 
   it("flags fail closed when removed package.json cannot read head", () => {
