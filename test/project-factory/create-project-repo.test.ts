@@ -262,6 +262,7 @@ describe("createProjectRepo", () => {
       `POST /repos/didi-build/demo-app/labels`,
       `POST /repos/didi-build/demo-app/labels`,
       `POST /repos/didi-build/demo-app/labels`,
+      `POST /repos/didi-build/demo-app/labels`,
       "GET /repos/didi-build/demo-app/contents/README.md",
       "GET /repos/didi-build/demo-app/contents/wrangler.jsonc",
       "GET /repos/didi-build/demo-app/branches/main/protection",
@@ -348,7 +349,7 @@ describe("createProjectRepo", () => {
     const labelPosts = calls.filter(
       (c) => c.method === "POST" && c.path.endsWith("/labels"),
     );
-    expect(labelPosts).toHaveLength(3);
+    expect(labelPosts).toHaveLength(4);
     expect(labelPosts.map((c) => c.body)).toEqual(EXPECTED_FACTORY_LABEL_POST_BODIES);
   });
 

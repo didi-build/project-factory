@@ -8,6 +8,11 @@ export type FactoryLabel = {
 
 export const STANDARD_FACTORY_LABELS: FactoryLabel[] = [
   {
+    name: "privileged-change",
+    color: "B60205",
+    description: "PR touches privileged deploy or workflow paths (review required)",
+  },
+  {
     name: "privileged-change-reviewed",
     color: "0E8A16",
     description: "Maintainer reviewed privileged-change warning",

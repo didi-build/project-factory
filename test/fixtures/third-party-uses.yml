@@ -1,0 +1,9 @@
+name: Example
+on:
+  push:
+jobs:
+  job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: pnpm/action-setup@2fe0347dc936dbd8d2c54de81bddc6c9c6e5d5b0 # v4.0.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

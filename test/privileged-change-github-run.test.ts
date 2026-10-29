@@ -1,0 +1,204 @@
+import { describe, expect, it } from "vitest";
+import {
+  PRIVILEGED_CHANGE_MARKER,
+  postPrivilegedChangeErrorStatus,
+  runPrivilegedChange,
+} from "../scripts/privileged-change-github.mjs";
+import { privilegedChangeReviewedLabel } from "../scripts/lib/privileged-change-labels.mjs";
+
+const WORKFLOW_PATH = ".github/workflows/x.yml";
+const WORKFLOW_YAML = `name: X
+on:
+  push:
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+`;
+
+function baseEnv(overrides = {}) {
+  return {
+    GITHUB_REPOSITORY: "didi-build/we-met",
+    PR_NUMBER: "13",
+    HEAD_SHA: "abc123deadbeef",
+    TRUSTED_ORG: "didi-build",
+    EVENT_ACTION: "synchronize",
+    GH_TOKEN: "test-token",
+    ...overrides,
+  };
+}
+
+type Call = { cmd: string; args: string[]; input?: string };
+
+function createFakeExec(handlers: {
+  onCall?: (call: Call) => string | void;
+  throwOnFirst?: boolean;
+}) {
+  const calls: Call[] = [];
+  let first = true;
+  const exec = (cmd: string, args: string[], opts?: { input?: string }) => {
+    const call = { cmd, args, input: opts?.input };
+    calls.push(call);
+    if (handlers.throwOnFirst && first) {
+      first = false;
+      throw new Error("simulated API failure");
+    }
+    if (handlers.onCall) {
+      const result = handlers.onCall(call);
+      if (result !== undefined) {
+        return result;
+      }
+    }
+    return defaultHandler(call);
+  };
+  return { exec, calls };
+}
+
+function defaultHandler(call: Call) {
+  const path = call.args.join(" ");
+  if (call.cmd === "gh" && path.includes("label list")) {
+    return JSON.stringify([
+      { name: "privileged-change" },
+      { name: privilegedChangeReviewedLabel },
+    ]);
+  }
+  if (call.cmd === "gh" && path.includes("/pulls/") && path.includes("/files")) {
+    return JSON.stringify([[{ filename: WORKFLOW_PATH, status: "added" }]]);
+  }
+  if (call.cmd === "gh" && path.includes("/pulls/13") && !path.includes("files")) {
+    return JSON.stringify({ labels: [] });
+  }
+  if (call.cmd === "gh" && path.includes("/contents/")) {
+    return JSON.stringify({
+      content: Buffer.from(WORKFLOW_YAML).toString("base64"),
+      encoding: "base64",
+    });
+  }
+  if (call.cmd === "gh" && path.includes("/comments") && path.includes("--jq")) {
+    return "";
+  }
+  if (call.cmd === "gh" && call.args.includes("POST") && path.includes("/comments")) {
+    return "{}";
+  }
+  if (call.cmd === "gh" && call.args.includes("POST") && path.includes("/labels")) {
+    return "{}";
+  }
+  if (call.cmd === "gh" && call.args.includes("POST") && path.includes("/statuses/")) {
+    return "{}";
+  }
+  return "";
+}
+
+function callsWithStdin(calls: Call[]) {
+  return calls.filter((c) => c.input !== undefined && c.input.length > 0);
+}
+
+function assertInputFlags(call: Call) {
+  expect(call.args).toContain("--input");
+  expect(call.args).toContain("-");
+}
+
+describe("runPrivilegedChange (integration with fake exec)", () => {
+  it("flagged PR: comment POST with marker, label POST, status failure, stdin uses --input -", () => {
+    const { exec, calls } = createFakeExec({});
+    const code = runPrivilegedChange({ exec, env: baseEnv() });
+    expect(code).toBe(0);
+
+    const commentPost = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes("/comments")) &&
+        !c.args.includes("--jq"),
+    );
+    expect(commentPost).toBeDefined();
+    expect(commentPost?.input).toContain(PRIVILEGED_CHANGE_MARKER);
+    assertInputFlags(commentPost!);
+
+    const labelPost = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes("/labels")),
+    );
+    expect(labelPost).toBeDefined();
+    assertInputFlags(labelPost!);
+
+    const statusPost = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes("/statuses/")),
+    );
+    expect(statusPost).toBeDefined();
+    const statusBody = JSON.parse(statusPost!.input ?? "{}");
+    expect(statusBody.state).toBe("failure");
+    expect(statusBody.context).toBe("privileged-change");
+    assertInputFlags(statusPost!);
+
+    for (const call of callsWithStdin(calls)) {
+      assertInputFlags(call);
+    }
+  });
+
+  it("first API call throws: error status POST with body and non-zero exit", () => {
+    const { exec, calls } = createFakeExec({ throwOnFirst: true });
+    const code = runPrivilegedChange({ exec, env: baseEnv() });
+    expect(code).toBe(1);
+
+    const errorStatus = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes("/statuses/abc123deadbeef")),
+    );
+    expect(errorStatus).toBeDefined();
+    expect(errorStatus?.input).toContain("privileged-change check errored");
+    assertInputFlags(errorStatus!);
+  });
+
+  it("PR already has privileged-change-reviewed: status success", () => {
+    const { exec, calls } = createFakeExec({
+      onCall: (call) => {
+        if (
+          call.cmd === "gh" &&
+          call.args.join(" ").includes("/pulls/13") &&
+          !call.args.join(" ").includes("files")
+        ) {
+          return JSON.stringify({
+            labels: [{ name: privilegedChangeReviewedLabel }],
+          });
+        }
+      },
+    });
+    const code = runPrivilegedChange({
+      exec,
+      env: baseEnv({ EVENT_ACTION: "labeled" }),
+    });
+    expect(code).toBe(0);
+    const statusPost = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes("/statuses/")),
+    );
+    const statusBody = JSON.parse(statusPost!.input ?? "{}");
+    expect(statusBody.state).toBe("success");
+  });
+});
+
+describe("postPrivilegedChangeErrorStatus", () => {
+  it("sends failure payload with --input -", () => {
+    const calls: Call[] = [];
+    const exec = (cmd: string, args: string[], opts?: { input?: string }) => {
+      calls.push({ cmd, args, input: opts?.input });
+      return "";
+    };
+    postPrivilegedChangeErrorStatus("didi-build/we-met", "sha1", exec, {
+      GH_TOKEN: "t",
+    });
+    expect(calls[0].args).toContain("--input");
+    expect(JSON.parse(calls[0].input ?? "{}").state).toBe("failure");
+  });
+});

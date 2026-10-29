@@ -1,0 +1,9 @@
+name: Example
+on:
+  workflow_dispatch:
+jobs:
+  job:
+    runs-on: ubuntu-latest
+    environment: migrate-nonprod
+    steps:
+      - run: echo ok
