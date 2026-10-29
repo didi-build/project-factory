@@ -95,6 +95,9 @@ const validMcpLinearInput = {
 };
 
 type McpCreateLinearProjectTool = {
+  inputSchema: {
+    parse: (input: Record<string, unknown>) => Record<string, unknown>;
+  };
   executor: (
     input: Record<string, unknown>,
   ) => Promise<{ content: { text: string }[] }>;
@@ -157,6 +160,31 @@ describe("createLinearProject MCP handler (create-server registration)", () => {
     };
     expect(payload).toMatchObject({ status: "planned", dry_run: true });
     expect(mutationCalls(calls)).toHaveLength(0);
+  });
+
+  it("rejects empty summary via MCP handler before Linear is called", async () => {
+    const calls: GraphqlCall[] = [];
+    const response = await runRegisteredMcpCreateLinearProject(
+      "mcp-empty-summary",
+      { ...validMcpLinearInput, summary: "" },
+      calls,
+    );
+    const payload = JSON.parse(response.content[0].text) as {
+      error?: { code: string };
+    };
+    expect(payload).toMatchObject({ error: { code: "invalid_input" } });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects empty summary in create_linear_project MCP inputSchema", () => {
+    const server = createFactoryMcpServer(env, "mcp-schema-summary", "mcp-caller");
+    const tool = getCreateLinearProjectMcpTool(server);
+    expect(() =>
+      tool.inputSchema.parse({
+        ...validMcpLinearInput,
+        summary: "",
+      }),
+    ).toThrow();
   });
 });
 
@@ -269,6 +297,11 @@ describe("createLinearProject", () => {
       baseInput,
     );
 
+    const teamsQuery = calls.find((c) => c.query.includes("query Teams"));
+    expect(teamsQuery?.variables).toEqual({
+      filter: { name: { eq: "Didi Build" } },
+    });
+
     const projectCreate = calls.find((c) => c.query.includes("ProjectCreate"));
     expect(projectCreate?.variables).toEqual({
       input: {
@@ -297,6 +330,72 @@ describe("createLinearProject", () => {
         name: { eq: "Ready for CTO breakdown" },
       },
     });
+
+    const kickoffQuery = calls.find((c) => c.query.includes("KickoffByMarker"));
+    expect(kickoffQuery?.variables).toEqual({
+      filter: {
+        project: { id: { eq: PROJECT_ID } },
+        description: { contains: `<!-- project-factory:epic:${PROJECT_ID} -->` },
+      },
+    });
+  });
+
+  it("repairs an existing project missing the repo label on labels.nodes", async () => {
+    const calls: GraphqlCall[] = [];
+    const EXTRA_LABEL_ID = "other-label-uuid";
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+        existingProjectMissingRepoLabel: true,
+        existingProjectExtraLabelId: EXTRA_LABEL_ID,
+      },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "repair-label", caller: "test", linear },
+      baseInput,
+    );
+    expect(result).toMatchObject({ status: "repaired" });
+    const projectUpdate = calls.find((c) => c.query.includes("ProjectUpdate"));
+    expect(projectUpdate?.variables).toEqual({
+      id: PROJECT_ID,
+      input: { labelIds: [EXTRA_LABEL_ID, "label-demo-uuid"] },
+    });
+    if (!("steps" in result)) {
+      throw new Error("expected success result");
+    }
+    expect(
+      result.steps.some((s) => s.id === "linear_project_repair" && s.status === "done"),
+    ).toBe(true);
+  });
+
+  it("returns upstream error when label repair ProjectUpdate fails", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+        existingProjectMissingRepoLabel: true,
+        existingProjectExtraLabelId: "other-label-uuid",
+        failMutation: "ProjectUpdate",
+      },
+      calls,
+    );
+    const result = await createLinearProject(
+      { env, requestId: "repair-label-fail", caller: "test", linear },
+      baseInput,
+    );
+    expect(result).toMatchObject({
+      error: { code: "upstream_error", step: "linear_project" },
+    });
+    expect(calls.some((c) => c.query.includes("ProjectUpdate"))).toBe(true);
+    const line = auditLine(logSpy, "repair-label-fail");
+    expect(line).toContain('"failed_step":"linear_project"');
+    expect(line).not.toContain("linear_project_repair");
   });
 
   it("is idempotent and does not change kickoff state on rerun with a different display_name", async () => {
@@ -366,6 +465,81 @@ describe("createLinearProject", () => {
         "group-repo-uuid",
       ),
     ).not.toBeNull();
+  });
+
+  it("skips idea relation when kickoff already has a related link to the idea", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+        ideaIssue: true,
+        kickoffHasRelationToIdea: true,
+        kickoffRelationType: "related",
+      },
+      calls,
+    );
+    await createLinearProject(
+      { env, requestId: "kickoff-related-skip", caller: "test", linear },
+      { ...baseInput, idea_issue: "DIDI-830" },
+    );
+    expect(calls.some((c) => c.query.includes("IssueRelationCreate"))).toBe(false);
+  });
+
+  it("creates idea relation when kickoff has related link to a different issue", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+        ideaIssue: true,
+        kickoffHasRelationToIdea: true,
+        kickoffRelationType: "related",
+        kickoffRelationRelatedIssueId: "unrelated-issue-uuid",
+      },
+      calls,
+    );
+    await createLinearProject(
+      { env, requestId: "kickoff-related-other", caller: "test", linear },
+      { ...baseInput, idea_issue: "DIDI-830" },
+    );
+    const relation = calls.find((c) => c.query.includes("IssueRelationCreate"));
+    expect(relation?.variables).toEqual({
+      input: {
+        issueId: "kickoff-uuid",
+        relatedIssueId: "idea-uuid",
+        type: "related",
+      },
+    });
+  });
+
+  it("creates idea relation when kickoff only has a non-related link to the idea", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+        ideaIssue: true,
+        kickoffHasRelationToIdea: true,
+        kickoffRelationType: "blocks",
+      },
+      calls,
+    );
+    await createLinearProject(
+      { env, requestId: "kickoff-blocks-link", caller: "test", linear },
+      { ...baseInput, idea_issue: "DIDI-830" },
+    );
+    const relation = calls.find((c) => c.query.includes("IssueRelationCreate"));
+    expect(relation?.variables).toEqual({
+      input: {
+        issueId: "kickoff-uuid",
+        relatedIssueId: "idea-uuid",
+        type: "related",
+      },
+    });
   });
 
   it("skips idea relation when idea already links to kickoff", async () => {
@@ -684,7 +858,7 @@ describe("createLinearProject", () => {
       { env, requestId: "idea-link", caller: "test", linear },
       { ...baseInput, idea_issue: "DIDI-830" },
     );
-    expect(calls.some((c) => c.query.includes("IssueUpdate"))).toBe(false);
+    expect(calls.some((c) => /\bissueUpdate\b/i.test(c.query))).toBe(false);
     const relation = calls.find((c) => c.query.includes("IssueRelationCreate"));
     expect(relation?.variables).toEqual({
       input: {

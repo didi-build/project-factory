@@ -114,6 +114,30 @@ describe("LinearClient", () => {
     expect(delays[0]).toBe(MAX_RETRY_AFTER_MS);
   });
 
+  it("does not pass raw GraphQL error message through on HTTP 200 errors", async () => {
+    const rawMessage = "LINEAR_RAW_GRAPHQL_200_CLIENT_DO_NOT_LEAK_77102";
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () =>
+        jsonResponse(200, {
+          errors: [
+            {
+              message: rawMessage,
+              extensions: { code: "INTERNAL_ERROR" },
+            },
+          ],
+        }),
+    });
+    const result = await client.request("query Teams { teams { nodes { id } } }");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBe(
+        publicLinearErrorMessage(200, "upstream_error"),
+      );
+      expect(result.error.message).not.toContain(rawMessage);
+    }
+  });
+
   it("maps RATELIMITED inside HTTP 200 GraphQL errors and retries reads", async () => {
     let attempts = 0;
     const client = new LinearClient({
