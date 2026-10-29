@@ -30,8 +30,12 @@ export type HarnessState = {
   ideaIssue?: boolean;
   ideaHasRelationToKickoff?: boolean;
   ideaRelationType?: string;
+  kickoffHasRelationToIdea?: boolean;
+  kickoffRelationType?: string;
   /** Factory-owned project exists but labels.nodes omits the repo label id. */
   existingProjectMissingRepoLabel?: boolean;
+  /** When set with existingProjectMissingRepoLabel, project keeps this label but not the repo label. */
+  existingProjectExtraLabelId?: string;
   failMutation?: string;
   /** When set, queries containing this substring return HTTP 502. */
   failRead?: string;
@@ -48,16 +52,25 @@ const PROJECT_ID = "project-demo-uuid";
 function toApiProject(
   node: HarnessProjectNode,
   labelId: string,
-  options?: { omitRepoLabelOnProject?: boolean },
+  options?: {
+    omitRepoLabelOnProject?: boolean;
+    extraLabelId?: string;
+  },
 ) {
+  let labelNodes: { id: string; name: string }[] = [
+    { id: labelId, name: "didi-build/demo-app" },
+  ];
+  if (options?.omitRepoLabelOnProject) {
+    labelNodes = options.extraLabelId
+      ? [{ id: options.extraLabelId, name: "other-label" }]
+      : [];
+  }
   return {
     id: node.id,
     name: node.name,
     url: node.url,
     description: node.description,
-    labels: options?.omitRepoLabelOnProject
-      ? { nodes: [] }
-      : { nodes: [{ id: labelId, name: "didi-build/demo-app" }] },
+    labels: { nodes: labelNodes },
     externalLinks: {
       nodes: node.factoryMarker
         ? [
@@ -182,6 +195,7 @@ export function createHarnessClient(
         const nodes = resolveProjectNodes(state, true).map((p) =>
           toApiProject(p, LABEL_ID, {
             omitRepoLabelOnProject: state.existingProjectMissingRepoLabel,
+            extraLabelId: state.existingProjectExtraLabelId,
           }),
         );
         return new Response(JSON.stringify({ data: { projects: { nodes } } }));
@@ -190,6 +204,7 @@ export function createHarnessClient(
         const nodes = resolveProjectNodes(state, false).map((p) =>
           toApiProject(p, LABEL_ID, {
             omitRepoLabelOnProject: state.existingProjectMissingRepoLabel,
+            extraLabelId: state.existingProjectExtraLabelId,
           }),
         );
         return new Response(JSON.stringify({ data: { projects: { nodes } } }));
@@ -238,6 +253,17 @@ export function createHarnessClient(
           );
         }
         if (state.kickoffExists) {
+          const kickoffRelationType = state.kickoffRelationType ?? "related";
+          const kickoffRelations =
+            state.kickoffHasRelationToIdea && state.ideaIssue
+              ? [
+                  {
+                    type: kickoffRelationType,
+                    issue: { id: KICKOFF_ID, identifier: "DIDI-900" },
+                    relatedIssue: { id: IDEA_ID, identifier: "DIDI-830" },
+                  },
+                ]
+              : [];
           return new Response(
             JSON.stringify({
               data: {
@@ -250,7 +276,7 @@ export function createHarnessClient(
                       url: "https://linear.app/didi-build/issue/DIDI-900",
                       description: `<!-- project-factory:epic:${PROJECT_ID} -->`,
                       state: { id: "other-state", name: "In development" },
-                      relations: { nodes: [] },
+                      relations: { nodes: kickoffRelations },
                     },
                   ],
                 },

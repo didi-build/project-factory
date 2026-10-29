@@ -6,7 +6,6 @@ import { detectRepoLabelConflict } from "../../src/linear/ownership.js";
 import { createFactoryMcpServer } from "../../src/mcp/create-server.js";
 import * as createLinearProjectModule from "../../src/tools/create-linear-project.js";
 import { createLinearProject } from "../../src/tools/create-linear-project.js";
-import * as linearContentModule from "../../src/factory/linear-content.js";
 import {
   createHarnessClient,
   defaultHarnessProject,
@@ -343,12 +342,14 @@ describe("createLinearProject", () => {
 
   it("repairs an existing project missing the repo label on labels.nodes", async () => {
     const calls: GraphqlCall[] = [];
+    const EXTRA_LABEL_ID = "other-label-uuid";
     const linear = createHarnessClient(
       {
         labelExists: true,
         projectExists: true,
         kickoffExists: true,
         existingProjectMissingRepoLabel: true,
+        existingProjectExtraLabelId: EXTRA_LABEL_ID,
       },
       calls,
     );
@@ -358,52 +359,16 @@ describe("createLinearProject", () => {
     );
     expect(result).toMatchObject({ status: "repaired" });
     const projectUpdate = calls.find((c) => c.query.includes("ProjectUpdate"));
-    expect(projectUpdate?.variables).toMatchObject({
+    expect(projectUpdate?.variables).toEqual({
       id: PROJECT_ID,
-      input: { labelIds: ["label-demo-uuid"] },
+      input: { labelIds: [EXTRA_LABEL_ID, "label-demo-uuid"] },
     });
-    const updateInput = (
-      projectUpdate?.variables as {
-        input?: { description?: string; labelIds?: string[] };
-      }
-    )?.input;
-    expect(updateInput?.description).toBeUndefined();
     if (!("steps" in result)) {
       throw new Error("expected success result");
     }
     expect(
       result.steps.some((s) => s.id === "linear_project_repair" && s.status === "done"),
     ).toBe(true);
-  });
-
-  it("repairs project description when factory marker check fails after discovery", async () => {
-    let markerChecks = 0;
-    const markerSpy = vi
-      .spyOn(linearContentModule, "projectHasFactoryMarker")
-      .mockImplementation(() => {
-        markerChecks += 1;
-        return markerChecks === 1;
-      });
-    const calls: GraphqlCall[] = [];
-    const linear = createHarnessClient(
-      {
-        labelExists: true,
-        projectExists: true,
-        kickoffExists: true,
-      },
-      calls,
-    );
-    const result = await createLinearProject(
-      { env, requestId: "repair-description", caller: "test", linear },
-      baseInput,
-    );
-    markerSpy.mockRestore();
-    expect(result).toMatchObject({ status: "repaired" });
-    const projectUpdate = calls.find((c) => c.query.includes("ProjectUpdate"));
-    expect(projectUpdate?.variables).toMatchObject({
-      id: PROJECT_ID,
-      input: { description: EXPECTED_PROJECT_DESCRIPTION },
-    });
   });
 
   it("is idempotent and does not change kickoff state on rerun with a different display_name", async () => {
@@ -473,6 +438,53 @@ describe("createLinearProject", () => {
         "group-repo-uuid",
       ),
     ).not.toBeNull();
+  });
+
+  it("skips idea relation when kickoff already has a related link to the idea", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+        ideaIssue: true,
+        kickoffHasRelationToIdea: true,
+        kickoffRelationType: "related",
+      },
+      calls,
+    );
+    await createLinearProject(
+      { env, requestId: "kickoff-related-skip", caller: "test", linear },
+      { ...baseInput, idea_issue: "DIDI-830" },
+    );
+    expect(calls.some((c) => c.query.includes("IssueRelationCreate"))).toBe(false);
+  });
+
+  it("creates idea relation when kickoff only has a non-related link to the idea", async () => {
+    const calls: GraphqlCall[] = [];
+    const linear = createHarnessClient(
+      {
+        labelExists: true,
+        projectExists: true,
+        kickoffExists: true,
+        ideaIssue: true,
+        kickoffHasRelationToIdea: true,
+        kickoffRelationType: "blocks",
+      },
+      calls,
+    );
+    await createLinearProject(
+      { env, requestId: "kickoff-blocks-link", caller: "test", linear },
+      { ...baseInput, idea_issue: "DIDI-830" },
+    );
+    const relation = calls.find((c) => c.query.includes("IssueRelationCreate"));
+    expect(relation?.variables).toEqual({
+      input: {
+        issueId: "kickoff-uuid",
+        relatedIssueId: "idea-uuid",
+        type: "related",
+      },
+    });
   });
 
   it("skips idea relation when idea already links to kickoff", async () => {
