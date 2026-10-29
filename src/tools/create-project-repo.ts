@@ -187,7 +187,7 @@ export async function createProjectRepo(
     }
 
     if (dryRun) {
-      const plan = await buildCreateProjectRepoDryRunPlan(
+      const built = await buildCreateProjectRepoDryRunPlan(
         ctx.env,
         {
           name: input.name,
@@ -197,6 +197,11 @@ export async function createProjectRepo(
         },
         { fetchImpl: ctx.fetchImpl },
       );
+      if (!built.ok) {
+        auditStatus = built.error.code;
+        return { error: built.error };
+      }
+      const plan = built.plan;
       auditStatus = plan.status;
       auditExtras = {
         steps: plan.steps,

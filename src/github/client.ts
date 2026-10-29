@@ -1,5 +1,10 @@
 import { createGitHubAppJwt } from "./jwt.js";
-import { trimGithubErrorMessage } from "./github-errors.js";
+import {
+  githubResponseFailure,
+  MISSING_GITHUB_APP_SECRET_MESSAGE,
+  sanitizeGithubApiCode,
+  trimmedHttpDetail,
+} from "./github-errors.js";
 
 export const WRITE_INSTALLATION_TOKEN_PERMISSIONS = {
   administration: "write",
@@ -82,7 +87,6 @@ export class GitHubClient {
         await new Promise((r) => setTimeout(r, delayMs));
         continue;
       }
-      let apiMessage = response.statusText;
       let apiCode: string | undefined;
       try {
         const errBody = (await response.json()) as {
@@ -90,21 +94,22 @@ export class GitHubClient {
           code?: string;
           errors?: { code?: string }[];
         };
-        apiMessage = errBody.message ?? apiMessage;
-        apiCode = errBody.code ?? errBody.errors?.[0]?.code;
+        apiCode = sanitizeGithubApiCode(errBody.code ?? errBody.errors?.[0]?.code);
       } catch {
         // ignore parse errors
       }
       const rateRemaining = response.headers.get("x-ratelimit-remaining");
       const isSecondaryRateLimit = response.status === 403 && rateRemaining === "0";
+      const safeCode = isSecondaryRateLimit ? "rate_limited" : (apiCode ?? "unknown");
+      const error: GitHubError = {
+        status: response.status,
+        code: safeCode,
+        message: trimmedHttpDetail(response.status, safeCode),
+        retryable: isSecondaryRateLimit ? true : retryable,
+      };
       return {
         ok: false,
-        error: {
-          status: response.status,
-          code: isSecondaryRateLimit ? "rate_limited" : apiCode,
-          message: apiMessage,
-          retryable: isSecondaryRateLimit ? true : retryable,
-        },
+        error,
       };
     }
     return {
@@ -133,7 +138,7 @@ export class GitHubClient {
         error: {
           status: 401,
           code: "missing_secret",
-          message: "invalid GitHub app private key",
+          message: MISSING_GITHUB_APP_SECRET_MESSAGE,
           retryable: false,
         },
       };
@@ -154,50 +159,42 @@ export class GitHubClient {
       },
     );
     if (!response.ok) {
-      let apiMessage = response.statusText;
-      let apiCode: string | undefined;
-      try {
-        const errBody = (await response.json()) as { message?: string; code?: string };
-        apiMessage = errBody.message ?? apiMessage;
-        apiCode = errBody.code;
-      } catch {
-        // ignore
-      }
-      const trimmed = trimGithubErrorMessage({
-        status: response.status,
-        code: apiCode,
-        message: apiMessage,
-        retryable: false,
-      });
-      if (response.status === 401) {
+      const failure = await githubResponseFailure(response);
+      if (failure.status === 401) {
         return {
           ok: false,
           error: {
-            status: 401,
+            ...failure,
             code: "missing_secret",
-            message: trimmed,
-            retryable: false,
+            message: MISSING_GITHUB_APP_SECRET_MESSAGE,
           },
         };
       }
-      if (response.status === 403 || response.status === 404) {
+      if (failure.status === 403 || failure.status === 404) {
         return {
           ok: false,
           error: {
-            status: response.status,
+            ...failure,
             code: "permission_denied",
-            message: trimmed,
-            retryable: false,
+          },
+        };
+      }
+      if (failure.status >= 500) {
+        return {
+          ok: false,
+          error: {
+            ...failure,
+            code: "upstream_error",
+            retryable: true,
           },
         };
       }
       return {
         ok: false,
         error: {
-          status: response.status,
+          ...failure,
           code: "upstream_error",
-          message: trimmed,
-          retryable: response.status >= 500,
+          retryable: failure.retryable,
         },
       };
     }

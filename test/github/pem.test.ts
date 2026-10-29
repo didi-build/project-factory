@@ -25,19 +25,19 @@ describe("normalizePrivateKeyPem", () => {
     expect(jwt.split(".")).toHaveLength(3);
   });
 
-  it("rejects corrupted PKCS#1 wrapper bytes", async () => {
+  it("rejects corrupted wrapper bytes after normalising corrupted input", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-    const pem = privateKey.export({ type: "pkcs1", format: "pem" }) as string;
-    const normalized = normalizePrivateKeyPem(pem);
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
     const begin = pemBoundary("BEGIN");
     const end = pemBoundary("END");
-    const body = normalized.replace(begin, "").replace(end, "").replace(/\s+/g, "");
+    const body = pem.replace(begin, "").replace(end, "").replace(/\s+/g, "");
     const der = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
     der[4] = 0x05;
     const b64 = btoa(String.fromCharCode(...der));
     const lines = b64.match(/.{1,64}/g) ?? [];
     const badPem = `${begin}\n${lines.join("\n")}\n${end}`;
-    await expect(importPKCS8(badPem, "RS256")).rejects.toThrow();
+    const normalized = normalizePrivateKeyPem(badPem);
+    await expect(importPKCS8(normalized, "RS256")).rejects.toThrow();
   });
 
   it("accepts PKCS#8 with flattened line breaks", async () => {

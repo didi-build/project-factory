@@ -1,4 +1,6 @@
+import type { GitHubError } from "./client.js";
 import { createGitHubAppJwt } from "./jwt.js";
+import { githubResponseFailure, trimmedHttpDetail } from "./github-errors.js";
 
 export const DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS = {
   metadata: "read",
@@ -6,7 +8,7 @@ export const DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS = {
 } as const;
 
 export type DryRunMintResult =
-  { ok: true; token: string } | { ok: false; status: number; message: string };
+  { ok: true; token: string } | ({ ok: false } & GitHubError);
 
 export async function mintDryRunInstallationToken(options: {
   appId: string;
@@ -19,7 +21,13 @@ export async function mintDryRunInstallationToken(options: {
   try {
     jwt = await createGitHubAppJwt(options.appId, options.privateKeyPem);
   } catch {
-    return { ok: false, status: 401, message: "invalid GitHub app private key" };
+    return {
+      ok: false,
+      status: 401,
+      code: "missing_secret",
+      message: trimmedHttpDetail(401, "missing_secret"),
+      retryable: false,
+    };
   }
   const response = await fetchImpl(
     `https://api.github.com/app/installations/${options.installationId}/access_tokens`,
@@ -37,26 +45,21 @@ export async function mintDryRunInstallationToken(options: {
     },
   );
   if (!response.ok) {
-    let message = response.statusText;
-    try {
-      const body = (await response.json()) as { message?: string };
-      message = body.message ?? message;
-    } catch {
-      // ignore
-    }
-    return { ok: false, status: response.status, message };
+    const failure = await githubResponseFailure(response);
+    return { ok: false, ...failure };
   }
   const data = (await response.json()) as { token: string };
   return { ok: true, token: data.token };
 }
 
+export type InstallationGetResult =
+  { ok: true; data: unknown } | ({ ok: false } & GitHubError);
+
 export async function installationGet(
   token: string,
   path: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<
-  { ok: true; data: unknown } | { ok: false; status: number; message: string }
-> {
+): Promise<InstallationGetResult> {
   const url = path.startsWith("http") ? path : `https://api.github.com${path}`;
   const response = await fetchImpl(url, {
     method: "GET",
@@ -67,14 +70,8 @@ export async function installationGet(
     },
   });
   if (!response.ok) {
-    let message = response.statusText;
-    try {
-      const body = (await response.json()) as { message?: string };
-      message = body.message ?? message;
-    } catch {
-      // ignore
-    }
-    return { ok: false, status: response.status, message };
+    const failure = await githubResponseFailure(response);
+    return { ok: false, ...failure };
   }
   const text = await response.text();
   return { ok: true, data: text ? JSON.parse(text) : null };
