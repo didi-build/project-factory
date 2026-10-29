@@ -31,7 +31,7 @@ export const privilegedPathMatchers = [
   },
   {
     id: "wrangler-config",
-    test: (filename) => filename === "wrangler.jsonc",
+    test: (filename) => /^wrangler[^/]*\.(jsonc?|toml)$/.test(filename),
   },
   {
     id: "src-auth",

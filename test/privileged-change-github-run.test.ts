@@ -19,7 +19,7 @@ jobs:
 
 function baseEnv(overrides = {}) {
   return {
-    GITHUB_REPOSITORY: "didi-build/we-met",
+    GITHUB_REPOSITORY: "didi-build/project-factory",
     PR_NUMBER: "13",
     HEAD_SHA: "abc123deadbeef",
     TRUSTED_ORG: "didi-build",
@@ -100,6 +100,70 @@ function assertInputFlags(call: Call) {
 }
 
 describe("runPrivilegedChange (integration with fake exec)", () => {
+  it("synchronize with stale reviewed label: DELETE reviewed label and status failure", () => {
+    const { exec, calls } = createFakeExec({
+      onCall: (call) => {
+        if (
+          call.cmd === "gh" &&
+          call.args.join(" ").includes("/pulls/13") &&
+          !call.args.join(" ").includes("files")
+        ) {
+          return JSON.stringify({
+            labels: [{ name: privilegedChangeReviewedLabel }],
+          });
+        }
+      },
+    });
+    const code = runPrivilegedChange({
+      exec,
+      env: baseEnv({ EVENT_ACTION: "synchronize" }),
+    });
+    expect(code).toBe(0);
+
+    const labelDelete = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("DELETE") &&
+        c.args.some((a) => a.includes("/labels/")),
+    );
+    expect(labelDelete).toBeDefined();
+    expect(labelDelete?.args.join(" ")).toContain(
+      encodeURIComponent(privilegedChangeReviewedLabel),
+    );
+
+    const statusPost = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes("/statuses/")),
+    );
+    const statusBody = JSON.parse(statusPost!.input ?? "{}");
+    expect(statusBody.state).toBe("failure");
+  });
+
+  it("creates missing repo labels before analysis", () => {
+    const { exec, calls } = createFakeExec({
+      onCall: (call) => {
+        if (
+          call.cmd === "gh" &&
+          call.args.includes("label") &&
+          call.args.includes("list")
+        ) {
+          return JSON.stringify([{ name: "bug" }]);
+        }
+      },
+    });
+    const code = runPrivilegedChange({ exec, env: baseEnv() });
+    expect(code).toBe(0);
+    const labelCreates = calls.filter(
+      (c) => c.cmd === "gh" && c.args.includes("label") && c.args.includes("create"),
+    );
+    expect(labelCreates.length).toBeGreaterThanOrEqual(2);
+    const createdNames = labelCreates.map((c) => c.args[c.args.indexOf("create") + 1]);
+    expect(createdNames).toContain("privileged-change");
+    expect(createdNames).toContain(privilegedChangeReviewedLabel);
+  });
+
   it("flagged PR: comment POST with marker, label POST, status failure, stdin uses --input -", () => {
     const { exec, calls } = createFakeExec({});
     const code = runPrivilegedChange({ exec, env: baseEnv() });

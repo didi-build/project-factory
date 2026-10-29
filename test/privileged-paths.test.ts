@@ -8,8 +8,14 @@ import {
 describe("privileged-paths (table)", () => {
   const cases: { path: string; privileged: boolean }[] = [
     { path: ".github/workflows/ci.yml", privileged: true },
+    { path: ".github/dependabot.yml", privileged: true },
+    { path: "CODEOWNERS", privileged: false },
     { path: "wrangler.jsonc", privileged: true },
+    { path: "wrangler.json", privileged: true },
+    { path: "wrangler.toml", privileged: true },
+    { path: "wrangler.ci.jsonc", privileged: true },
     { path: "src/auth/bearer.ts", privileged: true },
+    { path: "src/auth/other.ts", privileged: true },
     { path: "src/github/jwt.ts", privileged: true },
     { path: "src/github/client.ts", privileged: true },
     { path: "src/github/dry-run-installation.ts", privileged: true },

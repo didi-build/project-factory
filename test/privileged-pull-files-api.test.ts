@@ -49,6 +49,41 @@ describe("privileged-pull-files-api (unit)", () => {
     ]);
   });
 
+  it("includes previous_filename on renames", () => {
+    const stdout = JSON.stringify([
+      {
+        filename: "docs/readme.md",
+        previous_filename: "wrangler.jsonc",
+        status: "renamed",
+      },
+    ]);
+    expect(parsePullRequestFilesApiStdout(stdout)).toEqual([
+      {
+        filename: "docs/readme.md",
+        previous_filename: "wrangler.jsonc",
+        status: "renamed",
+      },
+    ]);
+  });
+
+  it("flags privileged path from rename previous_filename via analyze", async () => {
+    const { analyzePrivilegedChange } =
+      await import("../scripts/lib/privileged-change-analyze.mjs");
+    const result = analyzePrivilegedChange(
+      [
+        {
+          filename: "docs/readme.md",
+          previous_filename: "wrangler.jsonc",
+          status: "renamed",
+        },
+      ],
+      {},
+      { trustedOrg: "didi-build" },
+    );
+    expect(result.flagged).toBe(true);
+    expect(result.privilegedFiles).toContain("wrangler.jsonc");
+  });
+
   it("parses slurped single page ([[...]])", () => {
     const page = [
       { filename: "a.txt", status: "modified" },

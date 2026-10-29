@@ -17,20 +17,32 @@ export function flattenPullFilesPayload(parsed) {
 /**
  * @param {unknown} entry
  * @param {number} index
- * @returns {{ filename: string; status: string }}
+ * @returns {{ filename: string; status: string; previous_filename?: string }}
  */
 export function normalizePullFileEntry(entry, index) {
   if (!entry || typeof entry !== "object") {
     throw new TypeError(`pull files API entry ${index} is not an object`);
   }
-  const record = /** @type {{ filename?: unknown; status?: unknown }} */ (entry);
+  const record =
+    /** @type {{ filename?: unknown; status?: unknown; previous_filename?: unknown }} */ (
+      entry
+    );
   if (typeof record.filename !== "string" || record.filename.length === 0) {
     throw new TypeError(`pull files API entry ${index} missing string filename`);
   }
   if (typeof record.status !== "string" || record.status.length === 0) {
     throw new TypeError(`pull files API entry ${index} missing string status`);
   }
-  return { filename: record.filename, status: record.status };
+  /** @type {{ filename: string; status: string; previous_filename?: string }} */
+  const normalized = { filename: record.filename, status: record.status };
+  if (
+    record.status === "renamed" &&
+    typeof record.previous_filename === "string" &&
+    record.previous_filename.length > 0
+  ) {
+    normalized.previous_filename = record.previous_filename;
+  }
+  return normalized;
 }
 
 /**
@@ -72,8 +84,24 @@ export function parseGhApiPaginatedSlurpedStdout(stdout) {
 }
 
 /**
+ * @param {{ filename: string; status: string; previous_filename?: string }} file
+ * @returns {string[]}
+ */
+export function pullFilePathnames(file) {
+  const paths = [file.filename];
+  if (
+    file.status === "renamed" &&
+    typeof file.previous_filename === "string" &&
+    file.previous_filename.length > 0
+  ) {
+    paths.push(file.previous_filename);
+  }
+  return paths;
+}
+
+/**
  * @param {string} stdout
- * @returns {{ filename: string; status: string }[]}
+ * @returns {{ filename: string; status: string; previous_filename?: string }[]}
  */
 export function parsePullRequestFilesApiStdout(stdout) {
   const rawEntries = parseGhApiPaginatedSlurpedStdout(stdout);
