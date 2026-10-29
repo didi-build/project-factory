@@ -3,6 +3,8 @@ import {
   assessPackageJsonScriptsChange,
   extractNpmScriptsField,
   mergePackageJsonScriptsAssessment,
+  packageJsonAmongChangedFiles,
+  readPackageJsonViaContentsApi,
   stableScriptsJson,
 } from "../scripts/lib/privileged-package-scripts.mjs";
 import { analyzePrivilegedChange } from "../scripts/lib/privileged-change-analyze.mjs";
@@ -74,7 +76,7 @@ describe("privileged-package-scripts (unit)", () => {
     expect(result.findings[0]?.message).toContain("base ref");
   });
 
-  it("flags fail closed when JSON parse fails", () => {
+  it("flags fail closed when JSON parse fails at base ref", () => {
     const result = assessPackageJsonScriptsChange(
       [{ filename: "package.json", status: "modified" }],
       (ref) =>
@@ -86,6 +88,151 @@ describe("privileged-package-scripts (unit)", () => {
     );
     expect(result.flagPackageJson).toBe(true);
     expect(result.findings[0]?.message).toContain("invalid JSON at base ref");
+  });
+
+  it("flags fail closed when head read fails", () => {
+    const result = assessPackageJsonScriptsChange(
+      [{ filename: "package.json", status: "modified" }],
+      (ref) =>
+        ref === headSha
+          ? { ok: false, reason: "HTTP 404" }
+          : { ok: true, text: '{"scripts":{}}' },
+      baseSha,
+      headSha,
+    );
+    expect(result.flagPackageJson).toBe(true);
+    expect(result.findings[0]?.message).toContain("head ref");
+  });
+
+  it("flags fail closed when JSON parse fails at head ref", () => {
+    const result = assessPackageJsonScriptsChange(
+      [{ filename: "package.json", status: "modified" }],
+      (ref) =>
+        ref === headSha
+          ? { ok: true, text: "not-json" }
+          : { ok: true, text: '{"scripts":{}}' },
+      baseSha,
+      headSha,
+    );
+    expect(result.flagPackageJson).toBe(true);
+    expect(result.findings[0]?.message).toContain("invalid JSON at head ref");
+  });
+
+  it("flags fail closed when scripts is not an object at head ref", () => {
+    const result = assessPackageJsonScriptsChange(
+      [{ filename: "package.json", status: "modified" }],
+      (ref) =>
+        ref === headSha
+          ? { ok: true, text: '{"scripts":[]}' }
+          : { ok: true, text: '{"scripts":{}}' },
+      baseSha,
+      headSha,
+    );
+    expect(result.flagPackageJson).toBe(true);
+    expect(result.findings[0]?.message).toContain(
+      "scripts is not an object at head ref",
+    );
+  });
+
+  it("packageJsonAmongChangedFiles matches previous_filename on rename away", () => {
+    expect(
+      packageJsonAmongChangedFiles([
+        {
+          filename: "package.json.bak",
+          previous_filename: "package.json",
+          status: "renamed",
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("packageJsonAmongChangedFiles matches rename into package.json", () => {
+    expect(
+      packageJsonAmongChangedFiles([
+        {
+          filename: "package.json",
+          previous_filename: "package.json.example",
+          status: "renamed",
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("flags fail closed when added package.json cannot read base", () => {
+    const result = assessPackageJsonScriptsChange(
+      [{ filename: "package.json", status: "added" }],
+      (ref) =>
+        ref === baseSha
+          ? { ok: false, reason: "HTTP 404" }
+          : { ok: true, text: '{"scripts":{}}' },
+      baseSha,
+      headSha,
+    );
+    expect(result.flagPackageJson).toBe(true);
+    expect(result.findings[0]?.message).toContain("base ref");
+  });
+
+  it("flags fail closed when removed package.json cannot read head", () => {
+    const result = assessPackageJsonScriptsChange(
+      [{ filename: "package.json", status: "removed" }],
+      (ref) =>
+        ref === headSha
+          ? { ok: false, reason: "HTTP 404" }
+          : { ok: true, text: '{"scripts":{}}' },
+      baseSha,
+      headSha,
+    );
+    expect(result.flagPackageJson).toBe(true);
+    expect(result.findings[0]?.message).toContain("head ref");
+  });
+
+  describe("readPackageJsonViaContentsApi", () => {
+    const repo = "didi-build/project-factory";
+    const ref = "deadbeef";
+
+    it("returns read failure when ghApi throws", () => {
+      const exec = () => {
+        throw new Error("should not run");
+      };
+      const ghApi = () => {
+        throw new Error("api down");
+      };
+      const result = readPackageJsonViaContentsApi(exec, {}, repo, ref, ghApi);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toContain("api down");
+      }
+    });
+
+    it("returns read failure when response is not base64 content", () => {
+      const exec = () => "";
+      const ghApi = () => JSON.stringify({ encoding: "utf8", content: "plain" });
+      const result = readPackageJsonViaContentsApi(exec, {}, repo, ref, ghApi);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toContain("missing base64 content");
+      }
+    });
+
+    it("passes ref into the Contents API path", () => {
+      /** @type {import("../scripts/lib/privileged-gh-api.mjs").GhExec} */
+      const exec = () => "";
+      let capturedPath = "";
+      const ghApi = (
+        _exec: import("../scripts/lib/privileged-gh-api.mjs").GhExec,
+        _env: Record<string, string | undefined>,
+        args: string[],
+      ) => {
+        capturedPath = args[0];
+        return JSON.stringify({
+          encoding: "base64",
+          content: Buffer.from('{"scripts":{}}').toString("base64"),
+        });
+      };
+      const result = readPackageJsonViaContentsApi(exec, {}, repo, ref, ghApi);
+      expect(result.ok).toBe(true);
+      expect(capturedPath).toContain(`ref=${ref}`);
+    });
   });
 
   it("merge adds package.json to privilegedFiles when flagged", () => {

@@ -84,7 +84,7 @@ export const privilegedPathMatchers = [
   ...privilegedCtoPathMatchers,
   {
     id: "bootstrap-lib",
-    test: (filename) => /^scripts\/lib\/bootstrap[^/]*\.mjs$/.test(filename),
+    test: (filename) => privilegedBootstrapLibPaths.includes(filename),
   },
   {
     id: "privileged-change-scripts",

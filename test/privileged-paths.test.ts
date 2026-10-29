@@ -95,8 +95,17 @@ describe("privileged-paths (table)", () => {
     for (const path of privilegedCtoAdditionalPaths) {
       expect(isPrivilegedPath(path)).toBe(true);
     }
+  });
+
+  it("bootstrap-lib matcher uses privilegedBootstrapLibPaths", () => {
+    const bootstrapMatcher = privilegedPathMatchers.find(
+      (m) => m.id === "bootstrap-lib",
+    );
+    expect(bootstrapMatcher).toBeDefined();
     for (const path of privilegedBootstrapLibPaths) {
+      expect(bootstrapMatcher?.test(path)).toBe(true);
       expect(isPrivilegedPath(path)).toBe(true);
     }
+    expect(bootstrapMatcher?.test("scripts/lib/bootstrap-evil.mjs")).toBe(false);
   });
 });

@@ -202,6 +202,86 @@ describe("runPrivilegedChange (integration with fake exec)", () => {
     expect(statusBody.description).toContain("privileged-change check errored");
   });
 
+  it("package.json scripts change reads base and head refs and posts failure status", () => {
+    const baseSha = "base0000000001";
+    const headSha = "abc123deadbeef";
+    const packageJsonRefs: string[] = [];
+
+    const { exec, calls } = createFakeExec({
+      onCall: (call) => {
+        const joined = call.args.join(" ");
+        if (call.cmd === "gh" && joined.includes("/files")) {
+          return JSON.stringify([[{ filename: "package.json", status: "modified" }]]);
+        }
+        const contentsArg = call.args.find((a) => a.includes("contents/package.json"));
+        if (call.cmd === "gh" && contentsArg) {
+          const refMatch = contentsArg.match(/ref=([^&]+)/);
+          const ref = refMatch ? decodeURIComponent(refMatch[1]) : "";
+          packageJsonRefs.push(ref);
+          const payload = (body: unknown) =>
+            JSON.stringify({
+              encoding: "base64",
+              content: Buffer.from(JSON.stringify(body)).toString("base64"),
+            });
+          if (ref === baseSha) {
+            return payload({ scripts: { check: "npm test" } });
+          }
+          if (ref === headSha) {
+            return payload({ scripts: { check: "npm test 2" } });
+          }
+          throw new Error(`unexpected package.json ref ${ref}`);
+        }
+      },
+    });
+
+    const code = runPrivilegedChange({ exec, env: baseEnv({ HEAD_SHA: headSha }) });
+    expect(code).toBe(0);
+    expect(packageJsonRefs).toEqual([baseSha, headSha]);
+
+    const statusPost = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes(`/statuses/${headSha}`)),
+    );
+    const statusBody = JSON.parse(statusPost!.input ?? "{}");
+    expect(statusBody.state).toBe("failure");
+    expect(statusBody.context).toBe("privileged-change");
+
+    const commentPost = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes("/comments")) &&
+        !c.args.includes("--jq"),
+    );
+    expect(commentPost?.input).toContain("package.json");
+  });
+
+  it("exit 1 when pull request JSON has no base.sha", () => {
+    const { exec, calls } = createFakeExec({
+      onCall: (call) => {
+        if (
+          call.cmd === "gh" &&
+          call.args.join(" ").includes("/pulls/13") &&
+          !call.args.join(" ").includes("files")
+        ) {
+          return JSON.stringify({ labels: [] });
+        }
+      },
+    });
+    const code = runPrivilegedChange({ exec, env: baseEnv() });
+    expect(code).toBe(1);
+    const errorStatus = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes("/statuses/abc123deadbeef")),
+    );
+    expect(errorStatus).toBeDefined();
+    expect(errorStatus?.input).toContain("privileged-change check errored");
+  });
+
   it("flagged PR: comment POST with marker, label POST, status failure, stdin uses --input -", () => {
     const { exec, calls } = createFakeExec({});
     const code = runPrivilegedChange({ exec, env: baseEnv() });
