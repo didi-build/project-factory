@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   isPrivilegedPath,
+  privilegedBootstrapLibPaths,
+  privilegedCtoAdditionalPaths,
   privilegedPathMatchers,
   privilegedTokenMintingPaths,
 } from "../scripts/lib/privileged-paths.mjs";
@@ -16,6 +18,15 @@ describe("privileged-paths (table)", () => {
     { path: "wrangler.ci.jsonc", privileged: true },
     { path: "src/auth/bearer.ts", privileged: true },
     { path: "src/auth/other.ts", privileged: true },
+    { path: "src/env.ts", privileged: true },
+    { path: "src/cloudflare/dry-run-reads.ts", privileged: true },
+    { path: "src/linear/client.ts", privileged: true },
+    { path: ".secretlintrc.json", privileged: true },
+    { path: "scripts/bootstrap.mjs", privileged: true },
+    { path: "scripts/lib/bootstrap.mjs", privileged: true },
+    { path: "scripts/lib/bootstrap-install.mjs", privileged: true },
+    { path: "scripts/lib/bootstrap-token-env.mjs", privileged: true },
+    { path: "scripts/verify-action-pins.mjs", privileged: true },
     { path: "src/github/jwt.ts", privileged: true },
     { path: "src/github/client.ts", privileged: true },
     { path: "src/github/dry-run-installation.ts", privileged: true },
@@ -32,6 +43,7 @@ describe("privileged-paths (table)", () => {
     { path: "src/tools/create-project-repo.ts", privileged: false },
     { path: "src/index.ts", privileged: false },
     { path: "package.json", privileged: false },
+    { path: "package-lock.json", privileged: false },
   ];
 
   for (const { path, privileged } of cases) {
@@ -49,6 +61,13 @@ describe("privileged-paths (table)", () => {
       "token-mint-jwt",
       "token-mint-client",
       "token-mint-dry-run",
+      "src-env",
+      "src-cloudflare-dry-run-reads",
+      "src-linear-client",
+      "secretlintrc",
+      "bootstrap-script",
+      "bootstrap-lib",
+      "verify-action-pins",
       "privileged-change-scripts",
       "privileged-lib",
       "secret-usage",
@@ -65,6 +84,15 @@ describe("privileged-paths (table)", () => {
       "src/github/dry-run-installation.ts",
     ]);
     for (const path of privilegedTokenMintingPaths) {
+      expect(isPrivilegedPath(path)).toBe(true);
+    }
+  });
+
+  it("lists CTO-approved additional paths explicitly", () => {
+    for (const path of privilegedCtoAdditionalPaths) {
+      expect(isPrivilegedPath(path)).toBe(true);
+    }
+    for (const path of privilegedBootstrapLibPaths) {
       expect(isPrivilegedPath(path)).toBe(true);
     }
   });
