@@ -263,6 +263,7 @@ export async function buildCreateProjectRepoDryRunPlan(
             detail: "not configured",
           });
         } else {
+          github.protection_ok = null;
           warnings.push(`GET branch protection failed: ${protection.message}`);
           steps.push({
             id: "read_branch_protection",

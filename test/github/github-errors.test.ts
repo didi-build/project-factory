@@ -1,9 +1,35 @@
 import { describe, expect, it } from "vitest";
 import {
+  githubResponseFailure,
   mapGithubFailure,
   mapMintDryRunFailure,
   MISSING_GITHUB_APP_SECRET_MESSAGE,
+  sanitizeGithubApiCode,
 } from "../../src/github/github-errors.js";
+
+describe("sanitizeGithubApiCode", () => {
+  it("allowlists known GitHub error codes and drops arbitrary upstream values", () => {
+    expect(sanitizeGithubApiCode("custom")).toBe("custom");
+    expect(sanitizeGithubApiCode("  Validation_Failed  ")).toBe("validation_failed");
+    expect(sanitizeGithubApiCode("secret-leak-code")).toBe("unknown");
+    expect(sanitizeGithubApiCode("not valid")).toBe("unknown");
+  });
+
+  it("does not pass through raw upstream codes in githubResponseFailure", async () => {
+    const response = new Response(
+      JSON.stringify({
+        message: "do not surface this message",
+        code: "upstream-secret-code",
+        errors: [{ code: "also-reject-me" }],
+      }),
+      { status: 502 },
+    );
+    const failure = await githubResponseFailure(response);
+    expect(failure.message).toBe("502 unknown");
+    expect(failure.message).not.toContain("upstream");
+    expect(failure.code).toBe("unknown");
+  });
+});
 
 describe("mapGithubFailure", () => {
   it("maps secondary rate limit 403 to rate_limited", () => {

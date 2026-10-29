@@ -1,7 +1,10 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { GitHubClient } from "../../src/github/client.js";
-import { mapGithubFailure } from "../../src/github/github-errors.js";
+import {
+  mapGithubFailure,
+  MISSING_GITHUB_APP_SECRET_MESSAGE,
+} from "../../src/github/github-errors.js";
 import { EXPECTED_WRITE_INSTALLATION_TOKEN_PERMISSIONS } from "../project-factory/expected-github-payloads.js";
 import { normalizePrivateKeyPem } from "../../src/github/pem.js";
 import { fakePkcs8Pem } from "../project-factory/github-mock.js";
@@ -52,9 +55,11 @@ describe("GitHubClient installation token mint", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("missing_secret");
+      expect(result.error.message).toContain("PROJECT_FACTORY_GH_APP_ID");
+      expect(result.error.message).toContain("PROJECT_FACTORY_GH_PRIVATE_KEY");
+      expect(result.error.message).toBe(MISSING_GITHUB_APP_SECRET_MESSAGE);
       const mapped = mapGithubFailure(result.error, "read_repo");
-      expect(mapped.error.message).toContain("PROJECT_FACTORY_GH_APP_ID");
-      expect(mapped.error.message).toContain("PROJECT_FACTORY_GH_PRIVATE_KEY");
+      expect(mapped.error.message).toBe(MISSING_GITHUB_APP_SECRET_MESSAGE);
     }
   });
 

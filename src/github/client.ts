@@ -2,7 +2,8 @@ import { createGitHubAppJwt } from "./jwt.js";
 import {
   githubResponseFailure,
   MISSING_GITHUB_APP_SECRET_MESSAGE,
-  trimGithubErrorMessage,
+  sanitizeGithubApiCode,
+  trimmedHttpDetail,
 } from "./github-errors.js";
 
 export const WRITE_INSTALLATION_TOKEN_PERMISSIONS = {
@@ -86,7 +87,6 @@ export class GitHubClient {
         await new Promise((r) => setTimeout(r, delayMs));
         continue;
       }
-      let apiMessage = response.statusText;
       let apiCode: string | undefined;
       try {
         const errBody = (await response.json()) as {
@@ -94,25 +94,22 @@ export class GitHubClient {
           code?: string;
           errors?: { code?: string }[];
         };
-        apiMessage = errBody.message ?? apiMessage;
-        apiCode = errBody.code ?? errBody.errors?.[0]?.code;
+        apiCode = sanitizeGithubApiCode(errBody.code ?? errBody.errors?.[0]?.code);
       } catch {
         // ignore parse errors
       }
       const rateRemaining = response.headers.get("x-ratelimit-remaining");
       const isSecondaryRateLimit = response.status === 403 && rateRemaining === "0";
+      const safeCode = isSecondaryRateLimit ? "rate_limited" : (apiCode ?? "unknown");
       const error: GitHubError = {
         status: response.status,
-        code: isSecondaryRateLimit ? "rate_limited" : apiCode,
-        message: apiMessage,
+        code: safeCode,
+        message: trimmedHttpDetail(response.status, safeCode),
         retryable: isSecondaryRateLimit ? true : retryable,
       };
       return {
         ok: false,
-        error: {
-          ...error,
-          message: trimGithubErrorMessage(error),
-        },
+        error,
       };
     }
     return {

@@ -12,6 +12,19 @@ export function trimmedHttpDetail(status: number, code: string): string {
   return `${status} ${code}`;
 }
 
+const GITHUB_API_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+
+export function sanitizeGithubApiCode(raw: string | undefined): string {
+  if (!raw) {
+    return "unknown";
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (!GITHUB_API_CODE_PATTERN.test(normalized)) {
+    return "unknown";
+  }
+  return normalized;
+}
+
 export async function githubResponseFailure(response: Response): Promise<GitHubError> {
   let apiCode: string | undefined;
   try {
@@ -20,7 +33,7 @@ export async function githubResponseFailure(response: Response): Promise<GitHubE
       code?: string;
       errors?: { code?: string }[];
     };
-    apiCode = errBody.code ?? errBody.errors?.[0]?.code;
+    apiCode = sanitizeGithubApiCode(errBody.code ?? errBody.errors?.[0]?.code);
   } catch {
     // ignore parse errors
   }

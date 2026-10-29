@@ -145,6 +145,58 @@ describe("projectStatus", () => {
     }
   });
 
+  it("leaves protection_ok unknown when branch protection read fails with non-404", async () => {
+    const result = await projectStatus(
+      { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+      "req-ps-protection",
+      "test",
+      { name: "demo-app" },
+      {
+        fetchImpl: async (input) => {
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url;
+          if (url.includes("access_tokens")) {
+            return new Response(JSON.stringify({ token: "dry-run-token" }), {
+              status: 201,
+            });
+          }
+          if (url.endsWith("/repos/didi-build/demo-app")) {
+            return new Response(JSON.stringify({ full_name: "didi-build/demo-app" }), {
+              status: 200,
+            });
+          }
+          if (url.endsWith("/topics")) {
+            return new Response(JSON.stringify({ names: ["project-factory"] }), {
+              status: 200,
+            });
+          }
+          if (url.includes("/protection")) {
+            return new Response(
+              JSON.stringify({ message: "upstream protection error" }),
+              {
+                status: 502,
+              },
+            );
+          }
+          return new Response("{}", { status: 404 });
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      github: { exists: true, protection_ok: null },
+    });
+    if ("warnings" in result) {
+      expect(
+        result.warnings.some((w) => w.includes("GET branch protection failed")),
+      ).toBe(true);
+      expect(result.warnings.join(" ")).not.toContain("upstream protection error");
+    }
+  });
+
   it.each([
     ["403", 403, "permission_denied", false],
     ["404", 404, "permission_denied", false],
