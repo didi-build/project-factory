@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authorizeBearer } from "../../src/auth/bearer.js";
+import { authorizeBearer, factoryCaller } from "../../src/auth/bearer.js";
 import type { ProjectFactoryEnv } from "../../src/env.js";
 
 const baseEnv: ProjectFactoryEnv = {
@@ -32,5 +32,21 @@ describe("authorizeBearer", () => {
     });
     const env = { ...baseEnv, PROJECT_FACTORY_BEARER_TOKEN: undefined };
     expect(await authorizeBearer(request, env)).toBe(false);
+  });
+});
+
+describe("factoryCaller", () => {
+  it("caps X-Factory-Caller length and rejects invalid charset before audit use", () => {
+    const long = `a${"b".repeat(80)}`;
+    const request = new Request("https://example.com/mcp", {
+      headers: { "X-Factory-Caller": long },
+    });
+    expect(factoryCaller(request)).toHaveLength(64);
+    expect(factoryCaller(request)).toMatch(/^[a-zA-Z0-9._-]+$/);
+
+    const bad = new Request("https://example.com/mcp", {
+      headers: { "X-Factory-Caller": "bot@evil" },
+    });
+    expect(factoryCaller(bad)).toBe("unknown");
   });
 });

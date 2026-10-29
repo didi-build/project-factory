@@ -19,6 +19,10 @@ describe("worker fetch", () => {
       {} as ExecutionContext,
     );
     expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toEqual({ ok: true });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toMatch(/PROJECT_FACTORY|BEARER|PRIVATE_KEY|API_TOKEN/i);
   });
 
   it("returns 401 on /mcp without bearer", async () => {

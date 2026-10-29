@@ -23,7 +23,7 @@ beforeAll(async () => {
 describe("buildCreateProjectRepoDryRunPlan", () => {
   it("mints a scoped installation token and reads repo state with GET", async () => {
     const methods: string[] = [];
-    const plan = await buildCreateProjectRepoDryRunPlan(
+    const built = await buildCreateProjectRepoDryRunPlan(
       { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
       {
         name: "demo-app",
@@ -89,6 +89,11 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
         },
       },
     );
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+    const plan = built.plan;
     const nonGet = methods.filter((m) => m !== "GET");
     expect(nonGet).toEqual(["POST"]);
     expect(plan.github.github_installation_token_minted).toBe(true);
@@ -99,7 +104,7 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
   });
 
   it("does not treat a failed topics read as a factory conflict", async () => {
-    const plan = await buildCreateProjectRepoDryRunPlan(
+    const built = await buildCreateProjectRepoDryRunPlan(
       { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
       {
         name: "demo-app",
@@ -142,9 +147,99 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
         },
       },
     );
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+    const plan = built.plan;
     expect(plan.github.repo_exists).toBe(true);
     expect(plan.github.factory_owned).toBeNull();
     expect(plan.github.conflict_not_factory_owned).toBe(false);
     expect(plan.warnings.some((w) => w.includes("GET topics failed"))).toBe(true);
+    expect(plan.warnings.join(" ")).not.toContain("error");
+  });
+
+  it("returns missing_secret when the private key is malformed", async () => {
+    const built = await buildCreateProjectRepoDryRunPlan(
+      { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: "not-valid-pem" },
+      {
+        name: "demo-app",
+        org: "didi-build",
+        templateRepo: "didi-build/launchpad",
+        isPrivate: false,
+      },
+      {
+        fetchImpl: async () => {
+          throw new Error("GitHub fetch must not run");
+        },
+      },
+    );
+    expect(built.ok).toBe(false);
+    if (built.ok) {
+      return;
+    }
+    expect(built.error).toMatchObject({ code: "missing_secret" });
+  });
+
+  it("leaves protection_ok null when branch protection read fails with non-404", async () => {
+    const built = await buildCreateProjectRepoDryRunPlan(
+      { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+      {
+        name: "demo-app",
+        org: "didi-build",
+        templateRepo: "didi-build/launchpad",
+        isPrivate: false,
+      },
+      {
+        fetchImpl: async (input) => {
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url;
+          if (url.includes("access_tokens")) {
+            return new Response(JSON.stringify({ token: INSTALLATION_TOKEN }), {
+              status: 201,
+            });
+          }
+          if (url.includes("/app/installations/") && !url.includes("access_tokens")) {
+            return new Response(
+              JSON.stringify({ id: 1, account: { login: "didi-build" } }),
+              { status: 200 },
+            );
+          }
+          if (url.endsWith("/repos/didi-build/demo-app")) {
+            return new Response(JSON.stringify({ full_name: "didi-build/demo-app" }), {
+              status: 200,
+            });
+          }
+          if (url.endsWith("/topics")) {
+            return new Response(JSON.stringify({ names: ["project-factory"] }), {
+              status: 200,
+            });
+          }
+          if (url.includes("/protection")) {
+            return new Response(JSON.stringify({ message: "upstream failure" }), {
+              status: 502,
+            });
+          }
+          return new Response(JSON.stringify({ success: true, result: [] }), {
+            status: 200,
+          });
+        },
+      },
+    );
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+    const plan = built.plan;
+    expect(plan.github.protection_ok).toBeNull();
+    const protectionStep = plan.steps.find((s) => s.id === "read_branch_protection");
+    expect(protectionStep).toMatchObject({ status: "failed" });
+    expect(plan.warnings.some((w) => w.includes("GET branch protection failed"))).toBe(
+      true,
+    );
   });
 });
