@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
-import { projectStatus } from "../../src/tools/project-status.js";
 import { MISSING_GITHUB_APP_SECRET_MESSAGE } from "../../src/github/github-errors.js";
+import { projectStatus } from "../../src/tools/project-status.js";
+import type { FactorySuccess } from "../../src/tools/types.js";
 import { EXPECTED_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS } from "./expected-github-payloads.js";
 import { fakePkcs8Pem } from "./github-mock.js";
 
@@ -99,10 +100,11 @@ describe("projectStatus", () => {
       status: "done",
       github: { exists: null },
     });
-    if ("warnings" in result) {
-      expect(result.warnings.join(" ")).not.toContain("bad gateway");
-      expect(result.warnings.some((w) => w.includes("502"))).toBe(true);
-    }
+    expect("error" in result).toBe(false);
+    expect((result as FactorySuccess).warnings.join(" ")).not.toContain("bad gateway");
+    expect((result as FactorySuccess).warnings.some((w) => w.includes("502"))).toBe(
+      true,
+    );
   });
 
   it("leaves factory ownership unknown when topics read fails", async () => {
@@ -139,10 +141,11 @@ describe("projectStatus", () => {
     expect(result).toMatchObject({
       github: { exists: true, factory_owned: null },
     });
-    if ("warnings" in result) {
-      expect(result.warnings.some((w) => w.includes("GET topics failed"))).toBe(true);
-      expect(result.warnings.join(" ")).not.toContain("nope");
-    }
+    expect("error" in result).toBe(false);
+    expect(
+      (result as FactorySuccess).warnings.some((w) => w.includes("GET topics failed")),
+    ).toBe(true);
+    expect((result as FactorySuccess).warnings.join(" ")).not.toContain("nope");
   });
 
   it("leaves protection_ok unknown when branch protection read fails with non-404", async () => {
@@ -189,12 +192,15 @@ describe("projectStatus", () => {
     expect(result).toMatchObject({
       github: { exists: true, protection_ok: null },
     });
-    if ("warnings" in result) {
-      expect(
-        result.warnings.some((w) => w.includes("GET branch protection failed")),
-      ).toBe(true);
-      expect(result.warnings.join(" ")).not.toContain("upstream protection error");
-    }
+    expect("error" in result).toBe(false);
+    expect(
+      (result as FactorySuccess).warnings.some((w) =>
+        w.includes("GET branch protection failed"),
+      ),
+    ).toBe(true);
+    expect((result as FactorySuccess).warnings.join(" ")).not.toContain(
+      "upstream protection error",
+    );
   });
 
   it.each([

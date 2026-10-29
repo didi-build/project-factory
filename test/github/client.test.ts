@@ -74,6 +74,7 @@ describe("GitHubClient installation token mint", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("missing_secret");
+      expect(result.error.message).toBe(MISSING_GITHUB_APP_SECRET_MESSAGE);
     }
   });
 
@@ -239,4 +240,41 @@ describe("GitHubClient installation token mint", () => {
       expect(result.error.message).toBe("403 rate_limited");
     }
   });
+
+  it.each([
+    [422, "upstream-secret-code"],
+    [502, "upstream-secret-code"],
+  ] as const)(
+    "sanitizes disallowed upstream body code on request %s to unknown",
+    async (status, upstreamCode) => {
+      const pem = await fakePkcs8Pem();
+      const client = new GitHubClient({
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: pem,
+        fetchImpl: async (url, init) => {
+          const path = String(url);
+          if (path.includes("access_tokens")) {
+            return new Response(JSON.stringify({ token: "t" }), { status: 201 });
+          }
+          if ((init?.method ?? "GET") === "GET" && path.includes("/repos/o/r")) {
+            return new Response(
+              JSON.stringify({ message: "secret detail", code: upstreamCode }),
+              {
+                status,
+              },
+            );
+          }
+          return new Response("{}", { status: 404 });
+        },
+      });
+      const result = await client.request("GET", "/repos/o/r");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("unknown");
+        expect(result.error.message).toBe(`${status} unknown`);
+        expect(result.error.message).not.toContain("upstream");
+      }
+    },
+  );
 });

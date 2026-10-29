@@ -12,14 +12,21 @@ export function trimmedHttpDetail(status: number, code: string): string {
   return `${status} ${code}`;
 }
 
-const GITHUB_API_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const GITHUB_API_CODE_ALLOWLIST = new Set([
+  "missing",
+  "missing_field",
+  "invalid",
+  "already_exists",
+  "unprocessable",
+  "custom",
+]);
 
 export function sanitizeGithubApiCode(raw: string | undefined): string {
   if (!raw) {
     return "unknown";
   }
   const normalized = raw.trim().toLowerCase();
-  if (!GITHUB_API_CODE_PATTERN.test(normalized)) {
+  if (!GITHUB_API_CODE_ALLOWLIST.has(normalized)) {
     return "unknown";
   }
   return normalized;

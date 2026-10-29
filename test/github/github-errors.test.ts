@@ -8,11 +8,22 @@ import {
 } from "../../src/github/github-errors.js";
 
 describe("sanitizeGithubApiCode", () => {
-  it("allowlists known GitHub error codes and drops arbitrary upstream values", () => {
+  it("uses an explicit allowlist for GitHub API error codes", () => {
     expect(sanitizeGithubApiCode("custom")).toBe("custom");
-    expect(sanitizeGithubApiCode("  Validation_Failed  ")).toBe("validation_failed");
-    expect(sanitizeGithubApiCode("secret-leak-code")).toBe("unknown");
-    expect(sanitizeGithubApiCode("not valid")).toBe("unknown");
+    expect(sanitizeGithubApiCode("  already_exists  ")).toBe("already_exists");
+    expect(sanitizeGithubApiCode("validation_failed")).toBe("unknown");
+    expect(sanitizeGithubApiCode("upstream-secret-code")).toBe("unknown");
+  });
+
+  it("rejects digits, token-shaped fixtures, and over-length codes", () => {
+    expect(sanitizeGithubApiCode("404")).toBe("unknown");
+    expect(sanitizeGithubApiCode("error99")).toBe("unknown");
+    expect(sanitizeGithubApiCode("ghp_FIXTURE_ONLY_NOT_A_REAL_TOKEN")).toBe("unknown");
+    expect(sanitizeGithubApiCode(`custom${"x".repeat(80)}`)).toBe("unknown");
+  });
+
+  it("returns unknown when the upstream body omits a code", () => {
+    expect(sanitizeGithubApiCode(undefined)).toBe("unknown");
   });
 
   it("does not pass through raw upstream codes in githubResponseFailure", async () => {
@@ -28,6 +39,15 @@ describe("sanitizeGithubApiCode", () => {
     expect(failure.message).toBe("502 unknown");
     expect(failure.message).not.toContain("upstream");
     expect(failure.code).toBe("unknown");
+  });
+
+  it("falls back to unknown when the error JSON has no code field", async () => {
+    const response = new Response(JSON.stringify({ message: "bad gateway only" }), {
+      status: 502,
+    });
+    const failure = await githubResponseFailure(response);
+    expect(failure.code).toBe("unknown");
+    expect(failure.message).toBe("502 unknown");
   });
 });
 

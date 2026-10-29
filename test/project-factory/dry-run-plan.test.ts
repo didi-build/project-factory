@@ -180,4 +180,66 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
     }
     expect(built.error).toMatchObject({ code: "missing_secret" });
   });
+
+  it("leaves protection_ok null when branch protection read fails with non-404", async () => {
+    const built = await buildCreateProjectRepoDryRunPlan(
+      { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+      {
+        name: "demo-app",
+        org: "didi-build",
+        templateRepo: "didi-build/launchpad",
+        isPrivate: false,
+      },
+      {
+        fetchImpl: async (input) => {
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url;
+          if (url.includes("access_tokens")) {
+            return new Response(JSON.stringify({ token: INSTALLATION_TOKEN }), {
+              status: 201,
+            });
+          }
+          if (url.includes("/app/installations/") && !url.includes("access_tokens")) {
+            return new Response(
+              JSON.stringify({ id: 1, account: { login: "didi-build" } }),
+              { status: 200 },
+            );
+          }
+          if (url.endsWith("/repos/didi-build/demo-app")) {
+            return new Response(JSON.stringify({ full_name: "didi-build/demo-app" }), {
+              status: 200,
+            });
+          }
+          if (url.endsWith("/topics")) {
+            return new Response(JSON.stringify({ names: ["project-factory"] }), {
+              status: 200,
+            });
+          }
+          if (url.includes("/protection")) {
+            return new Response(JSON.stringify({ message: "upstream failure" }), {
+              status: 502,
+            });
+          }
+          return new Response(JSON.stringify({ success: true, result: [] }), {
+            status: 200,
+          });
+        },
+      },
+    );
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+    const plan = built.plan;
+    expect(plan.github.protection_ok).toBeNull();
+    const protectionStep = plan.steps.find((s) => s.id === "read_branch_protection");
+    expect(protectionStep).toMatchObject({ status: "failed" });
+    expect(plan.warnings.some((w) => w.includes("GET branch protection failed"))).toBe(
+      true,
+    );
+  });
 });
