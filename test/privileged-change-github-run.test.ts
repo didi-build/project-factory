@@ -67,7 +67,7 @@ function defaultHandler(call: Call) {
     return JSON.stringify([[{ filename: WORKFLOW_PATH, status: "added" }]]);
   }
   if (call.cmd === "gh" && path.includes("/pulls/13") && !path.includes("files")) {
-    return JSON.stringify({ labels: [] });
+    return JSON.stringify({ labels: [], base: { sha: "base0000000001" } });
   }
   if (call.cmd === "gh" && path.includes("/contents/")) {
     return JSON.stringify({
@@ -110,6 +110,7 @@ describe("runPrivilegedChange (integration with fake exec)", () => {
         ) {
           return JSON.stringify({
             labels: [{ name: privilegedChangeReviewedLabel }],
+            base: { sha: "base0000000001" },
           });
         }
       },
@@ -269,6 +270,7 @@ describe("runPrivilegedChange (integration with fake exec)", () => {
         ) {
           return JSON.stringify({
             labels: [{ name: privilegedChangeReviewedLabel }],
+            base: { sha: "base0000000001" },
           });
         }
       },

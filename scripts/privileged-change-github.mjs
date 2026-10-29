@@ -19,6 +19,11 @@ import {
   shouldFetchWorkflowFileContent,
 } from "./lib/privileged-pull-files-api.mjs";
 import { shouldClearStalePrivilegedReview } from "./lib/privileged-change-stale-review.mjs";
+import {
+  assessPackageJsonScriptsChange,
+  mergePackageJsonScriptsAssessment,
+  readPackageJsonViaContentsApi,
+} from "./lib/privileged-package-scripts.mjs";
 import { isWorkflowFile } from "./lib/privileged-paths.mjs";
 import { privilegedChangeErrorStatusPayload } from "./lib/privileged-change-status.mjs";
 import { buildPrivilegedChangeCommentBody } from "./privileged-change-comment-body.mjs";
@@ -135,9 +140,25 @@ export function runPrivilegedChange(options = {}) {
       }
     }
 
-    const analysis = analyzePrivilegedChange(changedFiles, workflowContentsByPath, {
+    const analysisBase = analyzePrivilegedChange(changedFiles, workflowContentsByPath, {
       trustedOrg,
     });
+
+    const baseSha = pr.base?.sha;
+    if (!baseSha) {
+      throw new Error("pull request missing base.sha");
+    }
+
+    const packageJsonAssessment = assessPackageJsonScriptsChange(
+      changedFiles,
+      (ref) => readPackageJsonViaContentsApi(exec, env, repo, ref, ghApi),
+      baseSha,
+      headSha,
+    );
+    const analysis = mergePackageJsonScriptsAssessment(
+      analysisBase,
+      packageJsonAssessment,
+    );
 
     const staleReviewCleared = shouldClearStalePrivilegedReview(
       eventAction,
