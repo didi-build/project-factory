@@ -32,6 +32,8 @@ export type HarnessState = {
   ideaRelationType?: string;
   kickoffHasRelationToIdea?: boolean;
   kickoffRelationType?: string;
+  /** Related issue id on kickoff relations (defaults to idea uuid when ideaIssue is set). */
+  kickoffRelationRelatedIssueId?: string;
   /** Factory-owned project exists but labels.nodes omits the repo label id. */
   existingProjectMissingRepoLabel?: boolean;
   /** When set with existingProjectMissingRepoLabel, project keeps this label but not the repo label. */
@@ -123,6 +125,7 @@ export function createHarnessClient(
   const STATE_ID = state.kickoffStateId ?? "state-cto-uuid";
   const KICKOFF_ID = "kickoff-uuid";
   const IDEA_ID = "idea-uuid";
+  const DEFAULT_UNRELATED_ISSUE_ID = "unrelated-issue-uuid";
 
   return new LinearClient({
     apiKey: buildLinearApiKey(),
@@ -254,13 +257,22 @@ export function createHarnessClient(
         }
         if (state.kickoffExists) {
           const kickoffRelationType = state.kickoffRelationType ?? "related";
+          const relatedIssueId =
+            state.kickoffRelationRelatedIssueId ??
+            (state.kickoffHasRelationToIdea ? IDEA_ID : IDEA_ID);
+          const relatedIdentifier =
+            relatedIssueId === IDEA_ID
+              ? "DIDI-830"
+              : relatedIssueId === DEFAULT_UNRELATED_ISSUE_ID
+                ? "DIDI-999"
+                : "OTHER";
           const kickoffRelations =
             state.kickoffHasRelationToIdea && state.ideaIssue
               ? [
                   {
                     type: kickoffRelationType,
                     issue: { id: KICKOFF_ID, identifier: "DIDI-900" },
-                    relatedIssue: { id: IDEA_ID, identifier: "DIDI-830" },
+                    relatedIssue: { id: relatedIssueId, identifier: relatedIdentifier },
                   },
                 ]
               : [];

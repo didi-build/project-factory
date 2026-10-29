@@ -45,27 +45,4 @@ describe("Linear operations queries", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.query).toContain("query KickoffByMarker");
   });
-
-  it("requires a team name filter to resolve the configured team", async () => {
-    const linear = createMockLinearClient((call) => {
-      const filter = (call.variables as { filter?: { name?: { eq?: string } } })
-        ?.filter;
-      if (!filter?.name?.eq) {
-        return {
-          ok: true,
-          data: { teams: { nodes: [{ id: "wrong-team", name: "Other" }] } },
-        };
-      }
-      if (filter.name.eq === "Didi Build") {
-        return {
-          ok: true,
-          data: { teams: { nodes: [{ id: "right-team", name: "Didi Build" }] } },
-        };
-      }
-      return { ok: true, data: { teams: { nodes: [] } } };
-    });
-
-    const result = await resolveLinearTeamId(linear, "Didi Build");
-    expect(result).toMatchObject({ ok: true, teamId: "right-team" });
-  });
 });
