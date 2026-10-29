@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GitHubClient } from "../../src/github/client.js";
+import { mapGithubFailure } from "../../src/github/github-errors.js";
 import { EXPECTED_WRITE_INSTALLATION_TOKEN_PERMISSIONS } from "../project-factory/expected-github-payloads.js";
 import { normalizePrivateKeyPem } from "../../src/github/pem.js";
 import { fakePkcs8Pem } from "../project-factory/github-mock.js";
@@ -51,6 +52,9 @@ describe("GitHubClient installation token mint", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("missing_secret");
+      const mapped = mapGithubFailure(result.error, "read_repo");
+      expect(mapped.error.message).toContain("PROJECT_FACTORY_GH_APP_ID");
+      expect(mapped.error.message).toContain("PROJECT_FACTORY_GH_PRIVATE_KEY");
     }
   });
 
@@ -153,6 +157,81 @@ describe("GitHubClient installation token mint", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("permission_denied");
+    }
+  });
+
+  it("caps Retry-After delay for read retries at 10s", async () => {
+    const pem = await fakePkcs8Pem();
+    const delays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout.bind(globalThis);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      if (typeof ms === "number") {
+        delays.push(ms);
+      }
+      return realSetTimeout(handler, 0, ...args);
+    }) as typeof setTimeout);
+
+    let repoAttempts = 0;
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: pem,
+      fetchImpl: async (url, init) => {
+        const path = String(url);
+        if (path.includes("access_tokens")) {
+          return new Response(JSON.stringify({ token: "t" }), { status: 201 });
+        }
+        if ((init?.method ?? "GET") === "GET" && path.includes("/repos/o/r")) {
+          repoAttempts += 1;
+          return new Response(JSON.stringify({ message: "bad gateway" }), {
+            status: 502,
+            headers: { "Retry-After": "30" },
+          });
+        }
+        return new Response("{}", { status: 404 });
+      },
+    });
+
+    const result = await client.request("GET", "/repos/o/r");
+
+    setTimeoutSpy.mockRestore();
+    expect(result.ok).toBe(false);
+    expect(repoAttempts).toBe(3);
+    expect(delays.length).toBeGreaterThan(0);
+    expect(delays.every((d) => d <= 10_000)).toBe(true);
+    expect(delays[0]).toBe(10_000);
+  });
+
+  it("maps secondary rate-limit 403 on API reads to rate_limited", async () => {
+    const pem = await fakePkcs8Pem();
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: pem,
+      fetchImpl: async (url, init) => {
+        const path = String(url);
+        if (path.includes("access_tokens")) {
+          return new Response(JSON.stringify({ token: "t" }), { status: 201 });
+        }
+        if ((init?.method ?? "GET") === "GET") {
+          return new Response(JSON.stringify({ message: "secondary limit" }), {
+            status: 403,
+            headers: { "x-ratelimit-remaining": "0" },
+          });
+        }
+        return new Response("{}", { status: 404 });
+      },
+    });
+    const result = await client.request("GET", "/repos/o/r");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.retryable).toBe(true);
+      expect(result.error.message).toBe("403 rate_limited");
     }
   });
 });

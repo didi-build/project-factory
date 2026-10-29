@@ -23,7 +23,7 @@ beforeAll(async () => {
 describe("buildCreateProjectRepoDryRunPlan", () => {
   it("mints a scoped installation token and reads repo state with GET", async () => {
     const methods: string[] = [];
-    const plan = await buildCreateProjectRepoDryRunPlan(
+    const built = await buildCreateProjectRepoDryRunPlan(
       { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
       {
         name: "demo-app",
@@ -89,6 +89,11 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
         },
       },
     );
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+    const plan = built.plan;
     const nonGet = methods.filter((m) => m !== "GET");
     expect(nonGet).toEqual(["POST"]);
     expect(plan.github.github_installation_token_minted).toBe(true);
@@ -99,7 +104,7 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
   });
 
   it("does not treat a failed topics read as a factory conflict", async () => {
-    const plan = await buildCreateProjectRepoDryRunPlan(
+    const built = await buildCreateProjectRepoDryRunPlan(
       { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
       {
         name: "demo-app",
@@ -142,9 +147,37 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
         },
       },
     );
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+    const plan = built.plan;
     expect(plan.github.repo_exists).toBe(true);
     expect(plan.github.factory_owned).toBeNull();
     expect(plan.github.conflict_not_factory_owned).toBe(false);
     expect(plan.warnings.some((w) => w.includes("GET topics failed"))).toBe(true);
+    expect(plan.warnings.join(" ")).not.toContain("error");
+  });
+
+  it("returns missing_secret when the private key is malformed", async () => {
+    const built = await buildCreateProjectRepoDryRunPlan(
+      { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: "not-valid-pem" },
+      {
+        name: "demo-app",
+        org: "didi-build",
+        templateRepo: "didi-build/launchpad",
+        isPrivate: false,
+      },
+      {
+        fetchImpl: async () => {
+          throw new Error("GitHub fetch must not run");
+        },
+      },
+    );
+    expect(built.ok).toBe(false);
+    if (built.ok) {
+      return;
+    }
+    expect(built.error).toMatchObject({ code: "missing_secret" });
   });
 });

@@ -10,7 +10,8 @@ import {
   installationGet,
   mintDryRunInstallationToken,
 } from "../github/dry-run-installation.js";
-import type { FactoryStep } from "./types.js";
+import { MISSING_GITHUB_APP_SECRET_MESSAGE } from "../github/github-errors.js";
+import type { FactoryError, FactoryStep } from "./types.js";
 
 export type GithubDryRunDiscovery = {
   installation?: {
@@ -42,6 +43,9 @@ export type DryRunPlan = {
   cloudflare: CloudflareDryRunRead;
 };
 
+export type DryRunPlanBuildResult =
+  { ok: true; plan: DryRunPlan } | { ok: false; error: FactoryError["error"] };
+
 export async function buildCreateProjectRepoDryRunPlan(
   env: ProjectFactoryEnv,
   input: {
@@ -54,7 +58,7 @@ export async function buildCreateProjectRepoDryRunPlan(
     fetchImpl?: typeof fetch;
     appClient?: GitHubAppClient;
   },
-): Promise<DryRunPlan> {
+): Promise<DryRunPlanBuildResult> {
   const fetchImpl = deps?.fetchImpl ?? fetch;
   const repoFull = `${input.org}/${input.name}`;
   const repoUrl = `https://github.com/${repoFull}`;
@@ -137,6 +141,15 @@ export async function buildCreateProjectRepoDryRunPlan(
         detail: `installation ${github.installation.id} for ${github.installation.account_login ?? "unknown account"}`,
       });
     } else {
+      if (installation.code === "missing_secret") {
+        return {
+          ok: false,
+          error: {
+            code: "missing_secret",
+            message: MISSING_GITHUB_APP_SECRET_MESSAGE,
+          },
+        };
+      }
       github.installation_error = installation.message;
       warnings.push(`GitHub installation GET failed: ${installation.message}`);
       steps.push({
@@ -153,11 +166,20 @@ export async function buildCreateProjectRepoDryRunPlan(
       fetchImpl,
     });
     if (!mint.ok) {
+      if (mint.code === "missing_secret") {
+        return {
+          ok: false,
+          error: {
+            code: "missing_secret",
+            message: MISSING_GITHUB_APP_SECRET_MESSAGE,
+          },
+        };
+      }
       warnings.push(`installation token mint failed: ${mint.message}`);
       steps.push({
         id: "mint_installation_token",
         status: "failed",
-        detail: `HTTP ${mint.status}`,
+        detail: mint.message,
       });
     } else {
       github.github_installation_token_minted = true;
@@ -273,15 +295,18 @@ export async function buildCreateProjectRepoDryRunPlan(
   }
 
   return {
-    status: planStatus,
-    dry_run: true,
-    steps,
-    warnings,
-    repo_url: repoUrl,
-    default_branch: DEFAULT_BRANCH,
-    labels: standardLabelNames(),
-    protection_ok: protectionOk,
-    github,
-    cloudflare,
+    ok: true,
+    plan: {
+      status: planStatus,
+      dry_run: true,
+      steps,
+      warnings,
+      repo_url: repoUrl,
+      default_branch: DEFAULT_BRANCH,
+      labels: standardLabelNames(),
+      protection_ok: protectionOk,
+      github,
+      cloudflare,
+    },
   };
 }

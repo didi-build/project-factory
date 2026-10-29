@@ -1,3 +1,5 @@
+import type { GitHubError } from "./client.js";
+import { githubResponseFailure, trimmedHttpDetail } from "./github-errors.js";
 import { createGitHubAppJwt } from "./jwt.js";
 
 export type GitHubAppClientOptions = {
@@ -8,7 +10,7 @@ export type GitHubAppClientOptions = {
 
 export type GitHubAppGetResult =
   | { ok: true; data: unknown; status: number }
-  | { ok: false; status: number; message: string };
+  | ({ ok: false; status: number } & GitHubError);
 
 export class GitHubAppClient {
   private jwt: string | null = null;
@@ -19,7 +21,18 @@ export class GitHubAppClient {
   }
 
   async get(path: string): Promise<GitHubAppGetResult> {
-    const jwt = await this.getJwt();
+    let jwt: string;
+    try {
+      jwt = await this.getJwt();
+    } catch {
+      return {
+        ok: false,
+        status: 401,
+        code: "missing_secret",
+        message: trimmedHttpDetail(401, "missing_secret"),
+        retryable: false,
+      };
+    }
     const url = path.startsWith("http") ? path : `https://api.github.com${path}`;
     const response = await this.fetchImpl(url, {
       method: "GET",
@@ -30,14 +43,8 @@ export class GitHubAppClient {
       },
     });
     if (!response.ok) {
-      let message = response.statusText;
-      try {
-        const body = (await response.json()) as { message?: string };
-        message = body.message ?? message;
-      } catch {
-        // ignore
-      }
-      return { ok: false, status: response.status, message };
+      const failure = await githubResponseFailure(response);
+      return { ok: false, ...failure };
     }
     const text = await response.text();
     return {

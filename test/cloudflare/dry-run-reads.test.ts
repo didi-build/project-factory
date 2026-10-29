@@ -43,7 +43,7 @@ describe("cloudflareDryRunReads", () => {
     });
     expect(result.worker_exists).toBe(true);
     expect(result.worker_secret_names).toEqual(["API_KEY"]);
-    expect(result.account_id).toBe("acct-1");
+    expect(result).not.toHaveProperty("account_id");
   });
 
   it("reports parse failures without throwing", async () => {
@@ -63,6 +63,6 @@ describe("cloudflareDryRunReads", () => {
       }
       return new Response("{}", { status: 404 });
     });
-    expect(result.error).toContain("not valid JSON");
+    expect(result.error).toContain("invalid_json");
   });
 });

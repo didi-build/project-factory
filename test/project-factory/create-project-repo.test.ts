@@ -156,6 +156,13 @@ describe("createProjectRepo", () => {
         conflict_not_factory_owned: false,
       },
     });
+    if (
+      "cloudflare" in result &&
+      result.cloudflare &&
+      typeof result.cloudflare === "object"
+    ) {
+      expect(result.cloudflare).not.toHaveProperty("account_id");
+    }
 
     const serialized = JSON.stringify(result);
     const auditLine = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -750,5 +757,123 @@ describe("createProjectRepo", () => {
       github_installation_token_minted: true,
     });
     expect(auditLine).not.toContain(INSTALLATION_TOKEN);
+  });
+
+  it("returns missing_secret on dry_run when GitHub private key is malformed", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const result = await createProjectRepo(
+      {
+        env: {
+          ...env,
+          PROJECT_FACTORY_GH_PRIVATE_KEY: "not-a-valid-pem",
+        },
+        requestId: "req-bad-pem-dry",
+        caller: "test",
+        fetchImpl: async () => {
+          throw new Error("GitHub fetch must not run when JWT mint fails");
+        },
+      },
+      {
+        name: "demo-app",
+        description: "Demo",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: true,
+      },
+    );
+    expect(result).toMatchObject({ error: { code: "missing_secret" } });
+    const auditLine = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((line) => line.includes("factory_call"));
+    expect(auditLine).toContain('"status":"missing_secret"');
+  });
+
+  it("validates description length after trimming whitespace", async () => {
+    const fetchImpl = async () => {
+      throw new Error("GitHub fetch must not run for invalid description");
+    };
+    const padded = ` ${"x".repeat(351)} `;
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-desc-len",
+        caller: "test",
+        fetchImpl,
+      },
+      {
+        name: "demo-app",
+        description: padded,
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({ error: { code: "invalid_input" } });
+  });
+
+  it("does not retry POST /generate", async () => {
+    let generateAttempts = 0;
+    const calls: RecordedGithubCall[] = [];
+    const github = await createMockGitHub((method, path) => {
+      if (method === "GET" && path === "/repos/didi-build/fresh-app") {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      if (method === "POST" && path.includes("/generate")) {
+        generateAttempts += 1;
+        return { status: 503, body: { message: "unavailable" } };
+      }
+      return { status: 404 };
+    }, calls);
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-no-retry-gen",
+        caller: "test",
+        github,
+      },
+      {
+        name: "fresh-app",
+        description: "Fresh",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: false,
+      },
+    );
+    expect(generateAttempts).toBe(1);
+    expect(result).toMatchObject({
+      error: { code: "upstream_error", step: "create_repo" },
+    });
+  });
+
+  it("counts topic PUT 422 as failure after generate", async () => {
+    const github = await createMockGitHub((method, path) => {
+      if (method === "GET" && path === "/repos/didi-build/topic422-app") {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      if (method === "POST" && path.includes("/generate")) {
+        return { status: 201, body: { full_name: "didi-build/topic422-app" } };
+      }
+      if (method === "PUT" && path.endsWith("/topics")) {
+        return { status: 422, body: { message: "Validation Failed" } };
+      }
+      if (method === "GET" && path.includes("/branches/main")) {
+        return { status: 200, body: { name: "main" } };
+      }
+      return { status: 404 };
+    });
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-topic422",
+        caller: "test",
+        github,
+      },
+      {
+        name: "topic422-app",
+        description: "Topic failure",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: false,
+      },
+    );
+    expect(result).toMatchObject({
+      error: { code: "upstream_error", step: "set_topic" },
+    });
   });
 });

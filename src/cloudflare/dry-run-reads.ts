@@ -1,7 +1,7 @@
 import type { ProjectFactoryEnv } from "../env.js";
+import { trimmedHttpDetail } from "../github/github-errors.js";
 
 export type CloudflareDryRunRead = {
-  account_id?: string;
   worker_name: string;
   worker_exists?: boolean;
   worker_secret_names?: string[];
@@ -36,12 +36,15 @@ async function cfGet<T>(
     return {
       ok: false,
       status: response.status,
-      message: "response was not valid JSON",
+      message: trimmedHttpDetail(response.status, "invalid_json"),
     };
   }
   if (!response.ok || !body.success) {
-    const message = body.errors?.[0]?.message ?? response.statusText;
-    return { ok: false, status: response.status, message };
+    return {
+      ok: false,
+      status: response.status,
+      message: trimmedHttpDetail(response.status, "cloudflare_error"),
+    };
   }
   return { ok: true, data: body.result as T };
 }
@@ -64,15 +67,14 @@ export async function cloudflareDryRunReads(
     fetchImpl,
   );
   if (!accounts.ok) {
-    out.error = `GET /accounts failed: ${accounts.message}`;
+    out.error = `accounts ${accounts.message}`;
     return out;
   }
   if (accounts.data.length !== 1) {
-    out.error = `expected exactly one Cloudflare account, found ${accounts.data.length}`;
+    out.error = trimmedHttpDetail(400, "account_count");
     return out;
   }
   const accountId = accounts.data[0].id;
-  out.account_id = accountId;
 
   const settings = await cfGet<unknown>(
     token,
@@ -84,7 +86,7 @@ export async function cloudflareDryRunReads(
   } else if (settings.status === 404) {
     out.worker_exists = false;
   } else {
-    out.error = `GET worker settings failed: ${settings.message}`;
+    out.error = `worker_settings ${settings.message}`;
     return out;
   }
 
@@ -98,7 +100,7 @@ export async function cloudflareDryRunReads(
   } else if (secrets.status === 404 && out.worker_exists === false) {
     out.worker_secret_names = [];
   } else {
-    out.error = `GET worker secrets failed: ${secrets.message}`;
+    out.error = `worker_secrets ${secrets.message}`;
   }
 
   return out;
