@@ -13,12 +13,18 @@ function parseJsonc(text: string): Record<string, unknown> {
   return JSON.parse(stripped) as Record<string, unknown>;
 }
 
+function assertNoWranglerLogEnv(env: Record<string, unknown>): void {
+  expect(env).not.toHaveProperty("WRANGLER_LOG");
+  expect(env).not.toHaveProperty("WRANGLER_LOG_SANITIZE");
+}
+
 type WorkflowStep = {
   env?: Record<string, unknown>;
 };
 
 type DeployWorkflow = {
-  jobs?: Record<string, { steps?: WorkflowStep[] }>;
+  env?: Record<string, unknown>;
+  jobs?: Record<string, { env?: Record<string, unknown>; steps?: WorkflowStep[] }>;
 };
 
 describe("wrangler and deploy production config", () => {
@@ -28,17 +34,24 @@ describe("wrangler and deploy production config", () => {
     expect(wrangler.preview_urls).toBe(false);
   });
 
-  it("does not set WRANGLER_LOG or WRANGLER_LOG_SANITIZE on any deploy workflow step", () => {
+  it("does not set wrangler debug env vars anywhere in deploy.yml", () => {
     const deployText = readFileSync(
       join(repoRoot, ".github/workflows/deploy.yml"),
       "utf8",
     );
+    expect(deployText).not.toContain("WRANGLER_LOG");
+
     const workflow = parseYaml(deployText) as DeployWorkflow;
-    const steps = Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
-    for (const step of steps) {
-      const env = step.env ?? {};
-      expect(env).not.toHaveProperty("WRANGLER_LOG");
-      expect(env).not.toHaveProperty("WRANGLER_LOG_SANITIZE");
+    if (workflow.env) {
+      assertNoWranglerLogEnv(workflow.env);
+    }
+    for (const job of Object.values(workflow.jobs ?? {})) {
+      if (job.env) {
+        assertNoWranglerLogEnv(job.env);
+      }
+      for (const step of job.steps ?? []) {
+        assertNoWranglerLogEnv(step.env ?? {});
+      }
     }
   });
 });
