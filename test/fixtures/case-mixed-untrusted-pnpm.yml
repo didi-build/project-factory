@@ -1,9 +1,0 @@
-name: mixed pnpm owner case
-on:
-  push:
-    branches: [main]
-jobs:
-  setup:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: PNPM/action-setup@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

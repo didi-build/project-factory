@@ -1,8 +1,0 @@
-name: Example
-on:
-  push:
-jobs:
-  job:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: Actions/checkout@v4.4.0
