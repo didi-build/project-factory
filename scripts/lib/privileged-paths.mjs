@@ -23,15 +23,20 @@ export const privilegedTokenMintingPaths = [
   "src/github/dry-run-installation.ts",
 ];
 
-/** @type {readonly string[]} */
-export const privilegedCtoAdditionalPaths = [
-  "src/env.ts",
-  "src/cloudflare/dry-run-reads.ts",
-  "src/linear/client.ts",
-  ".secretlintrc.json",
-  "scripts/bootstrap.mjs",
-  "scripts/verify-action-pins.mjs",
+/** @type {readonly { id: string; path: string }[]} */
+const privilegedCtoPathEntries = [
+  { id: "src-env", path: "src/env.ts" },
+  { id: "src-cloudflare-dry-run-reads", path: "src/cloudflare/dry-run-reads.ts" },
+  { id: "src-linear-client", path: "src/linear/client.ts" },
+  { id: "secretlintrc", path: ".secretlintrc.json" },
+  { id: "bootstrap-script", path: "scripts/bootstrap.mjs" },
+  { id: "verify-action-pins", path: "scripts/verify-action-pins.mjs" },
 ];
+
+/** @type {readonly string[]} */
+export const privilegedCtoAdditionalPaths = privilegedCtoPathEntries.map(
+  (entry) => entry.path,
+);
 
 /** @type {readonly string[]} */
 export const privilegedBootstrapLibPaths = [
@@ -39,6 +44,12 @@ export const privilegedBootstrapLibPaths = [
   "scripts/lib/bootstrap-install.mjs",
   "scripts/lib/bootstrap-token-env.mjs",
 ];
+
+/** @type {readonly { id: string; infrastructure?: boolean; test: (filename: string) => boolean }[]} */
+const privilegedCtoPathMatchers = privilegedCtoPathEntries.map(({ id, path }) => ({
+  id,
+  test: (filename) => filename === path,
+}));
 
 /** @type {readonly { id: string; infrastructure?: boolean; test: (filename: string) => boolean }[]} */
 export const privilegedPathMatchers = [
@@ -70,33 +81,10 @@ export const privilegedPathMatchers = [
     id: "token-mint-dry-run",
     test: (filename) => filename === "src/github/dry-run-installation.ts",
   },
-  {
-    id: "src-env",
-    test: (filename) => filename === "src/env.ts",
-  },
-  {
-    id: "src-cloudflare-dry-run-reads",
-    test: (filename) => filename === "src/cloudflare/dry-run-reads.ts",
-  },
-  {
-    id: "src-linear-client",
-    test: (filename) => filename === "src/linear/client.ts",
-  },
-  {
-    id: "secretlintrc",
-    test: (filename) => filename === ".secretlintrc.json",
-  },
-  {
-    id: "bootstrap-script",
-    test: (filename) => filename === "scripts/bootstrap.mjs",
-  },
+  ...privilegedCtoPathMatchers,
   {
     id: "bootstrap-lib",
     test: (filename) => /^scripts\/lib\/bootstrap[^/]*\.mjs$/.test(filename),
-  },
-  {
-    id: "verify-action-pins",
-    test: (filename) => filename === "scripts/verify-action-pins.mjs",
   },
   {
     id: "privileged-change-scripts",

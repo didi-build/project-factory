@@ -84,6 +84,32 @@ describe("privileged-pull-files-api (unit)", () => {
     expect(result.privilegedFiles).toContain("wrangler.jsonc");
   });
 
+  it("flags infrastructure high severity from rename previous_filename", async () => {
+    const { analyzePrivilegedChange } =
+      await import("../scripts/lib/privileged-change-analyze.mjs");
+    const infraPath = "scripts/lib/privileged-paths.mjs";
+    const result = analyzePrivilegedChange(
+      [
+        {
+          filename: "scripts/lib/privileged-paths-next.mjs",
+          previous_filename: infraPath,
+          status: "renamed",
+        },
+      ],
+      {},
+      { trustedOrg: "didi-build" },
+    );
+    expect(result.flagged).toBe(true);
+    expect(
+      result.findings.some(
+        (f) =>
+          f.severity === "high" &&
+          f.message.includes("privileged-change flag infrastructure") &&
+          f.message.includes(infraPath),
+      ),
+    ).toBe(true);
+  });
+
   it("parses slurped single page ([[...]])", () => {
     const page = [
       { filename: "a.txt", status: "modified" },

@@ -164,6 +164,43 @@ describe("runPrivilegedChange (integration with fake exec)", () => {
     expect(createdNames).toContain(privilegedChangeReviewedLabel);
   });
 
+  it("missing labels and gh label create throws: exit 1 and failure privileged-change status", () => {
+    const { exec: baseExec, calls } = createFakeExec({
+      onCall: (call) => {
+        if (
+          call.cmd === "gh" &&
+          call.args.includes("label") &&
+          call.args.includes("list")
+        ) {
+          return JSON.stringify([{ name: "bug" }]);
+        }
+      },
+    });
+    const execThrowsOnCreate = (
+      cmd: string,
+      args: string[],
+      opts?: { input?: string },
+    ) => {
+      if (cmd === "gh" && args.includes("label") && args.includes("create")) {
+        throw new Error("label create failed");
+      }
+      return baseExec(cmd, args, opts);
+    };
+    const code = runPrivilegedChange({ exec: execThrowsOnCreate, env: baseEnv() });
+    expect(code).toBe(1);
+    const errorStatus = calls.find(
+      (c) =>
+        c.cmd === "gh" &&
+        c.args.includes("POST") &&
+        c.args.some((a) => a.includes("/statuses/abc123deadbeef")),
+    );
+    expect(errorStatus).toBeDefined();
+    const statusBody = JSON.parse(errorStatus!.input ?? "{}");
+    expect(statusBody.state).toBe("failure");
+    expect(statusBody.context).toBe("privileged-change");
+    expect(statusBody.description).toContain("privileged-change check errored");
+  });
+
   it("flagged PR: comment POST with marker, label POST, status failure, stdin uses --input -", () => {
     const { exec, calls } = createFakeExec({});
     const code = runPrivilegedChange({ exec, env: baseEnv() });
@@ -259,7 +296,7 @@ describe("postPrivilegedChangeErrorStatus", () => {
       calls.push({ cmd, args, input: opts?.input });
       return "";
     };
-    postPrivilegedChangeErrorStatus("didi-build/we-met", "sha1", exec, {
+    postPrivilegedChangeErrorStatus("didi-build/project-factory", "sha1", exec, {
       GH_TOKEN: "t",
     });
     expect(calls[0].args).toContain("--input");
