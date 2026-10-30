@@ -38,7 +38,7 @@ export type DryRunPlan = {
   repo_url: string;
   default_branch: typeof DEFAULT_BRANCH;
   labels: string[];
-  protection_ok: boolean;
+  protection_ok: boolean | null;
   github: GithubDryRunDiscovery;
   cloudflare: CloudflareDryRunRead;
 };
@@ -99,7 +99,7 @@ export async function buildCreateProjectRepoDryRunPlan(
     protection_ok: null,
   };
 
-  let protectionOk = false;
+  let protectionOk: boolean | null = null;
 
   if (!env.PROJECT_FACTORY_GH_PRIVATE_KEY) {
     warnings.push(
@@ -199,6 +199,7 @@ export async function buildCreateProjectRepoDryRunPlan(
           github.factory_owned = false;
           github.conflict_not_factory_owned = false;
           github.protection_ok = false;
+          protectionOk = false;
           steps.push({ id: "read_repo", status: "done", detail: "not found" });
         } else {
           warnings.push(`GET /repos/${repoFull} failed: ${repo.message}`);
@@ -264,6 +265,7 @@ export async function buildCreateProjectRepoDryRunPlan(
           });
         } else {
           github.protection_ok = null;
+          protectionOk = null;
           warnings.push(`GET branch protection failed: ${protection.message}`);
           steps.push({
             id: "read_branch_protection",

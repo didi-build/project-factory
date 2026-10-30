@@ -8,9 +8,23 @@ import {
 } from "../../src/github/github-errors.js";
 
 describe("sanitizeGithubApiCode", () => {
+  it.each([
+    "missing",
+    "missing_field",
+    "invalid",
+    "already_exists",
+    "unprocessable",
+    "custom",
+  ] as const)("passes allowlisted code %s unchanged", (code) => {
+    expect(sanitizeGithubApiCode(code)).toBe(code);
+  });
+
+  it("normalizes allowlisted codes with trim and lowercasing", () => {
+    expect(sanitizeGithubApiCode(" Already_Exists ")).toBe("already_exists");
+  });
+
   it("uses an explicit allowlist for GitHub API error codes", () => {
     expect(sanitizeGithubApiCode("custom")).toBe("custom");
-    expect(sanitizeGithubApiCode("  already_exists  ")).toBe("already_exists");
     expect(sanitizeGithubApiCode("validation_failed")).toBe("unknown");
     expect(sanitizeGithubApiCode("upstream-secret-code")).toBe("unknown");
   });
@@ -45,6 +59,13 @@ describe("sanitizeGithubApiCode", () => {
     const response = new Response(JSON.stringify({ message: "bad gateway only" }), {
       status: 502,
     });
+    const failure = await githubResponseFailure(response);
+    expect(failure.code).toBe("unknown");
+    expect(failure.message).toBe("502 unknown");
+  });
+
+  it("falls back to unknown when the error body is not JSON", async () => {
+    const response = new Response("not json", { status: 502 });
     const failure = await githubResponseFailure(response);
     expect(failure.code).toBe("unknown");
     expect(failure.message).toBe("502 unknown");

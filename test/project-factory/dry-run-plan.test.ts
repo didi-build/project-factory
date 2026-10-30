@@ -100,6 +100,7 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
     expect(plan.github.repo_exists).toBe(true);
     expect(plan.github.factory_owned).toBe(true);
     expect(plan.github.conflict_not_factory_owned).toBe(false);
+    expect(plan.protection_ok).toBe(true);
     expect(JSON.stringify(plan)).not.toContain(INSTALLATION_TOKEN);
   });
 
@@ -236,10 +237,142 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
     }
     const plan = built.plan;
     expect(plan.github.protection_ok).toBeNull();
+    expect(plan.protection_ok).toBeNull();
+    expect(plan.protection_ok).not.toBe(true);
+    expect(plan.github.protection_ok).not.toBe(true);
     const protectionStep = plan.steps.find((s) => s.id === "read_branch_protection");
     expect(protectionStep).toMatchObject({ status: "failed" });
     expect(plan.warnings.some((w) => w.includes("GET branch protection failed"))).toBe(
       true,
     );
+  });
+
+  it("sets top-level protection_ok false when the repo read returns 404", async () => {
+    const built = await buildCreateProjectRepoDryRunPlan(
+      { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+      {
+        name: "demo-app",
+        org: "didi-build",
+        templateRepo: "didi-build/launchpad",
+        isPrivate: false,
+      },
+      {
+        fetchImpl: async (input) => {
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url;
+          if (url.includes("access_tokens")) {
+            return new Response(JSON.stringify({ token: INSTALLATION_TOKEN }), {
+              status: 201,
+            });
+          }
+          if (url.includes("/app/installations/")) {
+            return new Response(
+              JSON.stringify({ id: 1, account: { login: "didi-build" } }),
+              { status: 200 },
+            );
+          }
+          if (url.endsWith("/repos/didi-build/demo-app")) {
+            return new Response(JSON.stringify({ message: "Not Found" }), {
+              status: 404,
+            });
+          }
+          return new Response(JSON.stringify({ success: true, result: [] }), {
+            status: 200,
+          });
+        },
+      },
+    );
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+    const plan = built.plan;
+    expect(plan.github.repo_exists).toBe(false);
+    expect(plan.github.protection_ok).toBe(false);
+    expect(plan.protection_ok).toBe(false);
+    expect(plan.protection_ok).not.toBe(true);
+  });
+
+  it("leaves top-level protection_ok null when GitHub App credentials are not configured", async () => {
+    const built = await buildCreateProjectRepoDryRunPlan(
+      { ...envBase },
+      {
+        name: "demo-app",
+        org: "didi-build",
+        templateRepo: "didi-build/launchpad",
+        isPrivate: false,
+      },
+      {
+        fetchImpl: async () => {
+          throw new Error("GitHub fetch must not run without credentials");
+        },
+      },
+    );
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+    expect(built.plan.protection_ok).toBeNull();
+    expect(built.plan.github.protection_ok).toBeNull();
+    expect(built.plan.protection_ok).not.toBe(true);
+    expect(built.plan.github.protection_ok).not.toBe(true);
+  });
+
+  it("leaves top-level protection_ok null when the repo read fails with non-404", async () => {
+    const built = await buildCreateProjectRepoDryRunPlan(
+      { ...envBase, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+      {
+        name: "demo-app",
+        org: "didi-build",
+        templateRepo: "didi-build/launchpad",
+        isPrivate: false,
+      },
+      {
+        fetchImpl: async (input) => {
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url;
+          if (url.includes("access_tokens")) {
+            return new Response(JSON.stringify({ token: INSTALLATION_TOKEN }), {
+              status: 201,
+            });
+          }
+          if (url.includes("/app/installations/")) {
+            return new Response(
+              JSON.stringify({ id: 1, account: { login: "didi-build" } }),
+              { status: 200 },
+            );
+          }
+          if (url.endsWith("/repos/didi-build/demo-app")) {
+            return new Response(JSON.stringify({ message: "upstream repo error" }), {
+              status: 502,
+            });
+          }
+          return new Response(JSON.stringify({ success: true, result: [] }), {
+            status: 200,
+          });
+        },
+      },
+    );
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+    const plan = built.plan;
+    expect(plan.github.repo_exists).toBeNull();
+    expect(plan.protection_ok).toBeNull();
+    expect(plan.github.protection_ok).toBeNull();
+    expect(plan.protection_ok).not.toBe(true);
+    expect(plan.github.protection_ok).not.toBe(true);
+    expect(
+      plan.warnings.some((w) => w.includes("GET /repos/didi-build/demo-app failed")),
+    ).toBe(true);
   });
 });

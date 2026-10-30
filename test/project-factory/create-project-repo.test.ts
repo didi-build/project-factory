@@ -149,6 +149,7 @@ describe("createProjectRepo", () => {
     expect(result).toMatchObject({
       status: "planned",
       dry_run: true,
+      protection_ok: false,
       github: {
         github_installation_token_minted: true,
         repo_exists: false,
@@ -156,6 +157,7 @@ describe("createProjectRepo", () => {
         conflict_not_factory_owned: false,
       },
     });
+    expect("summary" in result).toBe(false);
     if (
       "cloudflare" in result &&
       result.cloudflare &&
@@ -170,6 +172,59 @@ describe("createProjectRepo", () => {
     expect(auditLine).not.toContain(INSTALLATION_TOKEN);
     expect(auditLine).toContain('"github_installation_token_minted":true');
     expect(auditLine).toContain('"metadata":"read"');
+  });
+
+  it("dry_run omits new output fields and treats null protection_ok as not ok", async () => {
+    const fetchProtectionFailure = buildDryRunFetch((req) => {
+      if (req.url.includes("access_tokens")) {
+        return { status: 201, body: { token: INSTALLATION_TOKEN } };
+      }
+      if (req.url.includes("/app/installations/")) {
+        return {
+          status: 200,
+          body: { id: 175254357, account: { login: "didi-build" } },
+        };
+      }
+      if (req.url.endsWith("/repos/didi-build/demo-app")) {
+        return { status: 200, body: { full_name: "didi-build/demo-app" } };
+      }
+      if (req.url.endsWith("/topics")) {
+        return { status: 200, body: { names: ["project-factory"] } };
+      }
+      if (req.url.includes("/protection")) {
+        return { status: 502, body: { message: "upstream protection error" } };
+      }
+      return { status: 404, body: {} };
+    });
+    const result = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-dry-run-null-protection",
+        caller: "test",
+        fetchImpl: fetchProtectionFailure,
+      },
+      {
+        name: "demo-app",
+        description: "Demo",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: true,
+      },
+    );
+    expect("error" in result).toBe(false);
+    if ("error" in result) {
+      return;
+    }
+    expect("summary" in result).toBe(false);
+    expect(result).toMatchObject({
+      protection_ok: null,
+      github: { protection_ok: null },
+    });
+    const dryRun = result as typeof result & {
+      protection_ok: boolean | null;
+      github: { protection_ok: boolean | null };
+    };
+    expect(dryRun.protection_ok).not.toBe(true);
+    expect(dryRun.github.protection_ok).not.toBe(true);
   });
 
   it("dry_run reports conflict when repo exists without factory topic", async () => {

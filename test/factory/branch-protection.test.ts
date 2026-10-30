@@ -6,4 +6,8 @@ describe("protectionLooksCorrect", () => {
   it("accepts GitHub enabled-object shape", () => {
     expect(protectionLooksCorrect(githubBranchProtectionApiBody())).toBe(true);
   });
+
+  it("reports missing protection as not ok", () => {
+    expect(protectionLooksCorrect(null)).toBe(false);
+  });
 });
