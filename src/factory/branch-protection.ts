@@ -26,6 +26,11 @@ function flagMatches(actual: unknown, expected: boolean): boolean {
   return false;
 }
 
+/** Fail closed: only an explicit true counts as OK (null and false do not). */
+export function branchProtectionReportedOk(value: boolean | null): boolean {
+  return value === true;
+}
+
 export function protectionLooksCorrect(
   protection: Record<string, unknown> | null,
 ): boolean {

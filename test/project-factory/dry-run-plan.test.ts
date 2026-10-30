@@ -1,6 +1,9 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
-import { buildCreateProjectRepoDryRunPlan } from "../../src/tools/dry-run-plan.js";
+import {
+  buildCreateProjectRepoDryRunPlan,
+  summarizeCreateProjectRepoDryRunPlan,
+} from "../../src/tools/dry-run-plan.js";
 import { EXPECTED_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS } from "./expected-github-payloads.js";
 import { fakePkcs8Pem } from "./github-mock.js";
 
@@ -100,6 +103,7 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
     expect(plan.github.repo_exists).toBe(true);
     expect(plan.github.factory_owned).toBe(true);
     expect(plan.github.conflict_not_factory_owned).toBe(false);
+    expect(plan.protection_ok).toBe(true);
     expect(JSON.stringify(plan)).not.toContain(INSTALLATION_TOKEN);
   });
 
@@ -236,6 +240,8 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
     }
     const plan = built.plan;
     expect(plan.github.protection_ok).toBeNull();
+    expect(plan.protection_ok).toBeNull();
+    expect(summarizeCreateProjectRepoDryRunPlan(plan).branch_protection_ok).toBe(false);
     const protectionStep = plan.steps.find((s) => s.id === "read_branch_protection");
     expect(protectionStep).toMatchObject({ status: "failed" });
     expect(plan.warnings.some((w) => w.includes("GET branch protection failed"))).toBe(

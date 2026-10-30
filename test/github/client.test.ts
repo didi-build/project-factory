@@ -241,6 +241,31 @@ describe("GitHubClient installation token mint", () => {
     }
   });
 
+  it("uses unknown when the API error body is not JSON", async () => {
+    const pem = await fakePkcs8Pem();
+    const client = new GitHubClient({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: pem,
+      fetchImpl: async (url, init) => {
+        const path = String(url);
+        if (path.includes("access_tokens")) {
+          return new Response(JSON.stringify({ token: "t" }), { status: 201 });
+        }
+        if ((init?.method ?? "GET") === "GET" && path.includes("/repos/o/r")) {
+          return new Response("not json", { status: 422 });
+        }
+        return new Response("{}", { status: 404 });
+      },
+    });
+    const result = await client.request("GET", "/repos/o/r");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("unknown");
+      expect(result.error.message).toBe("422 unknown");
+    }
+  });
+
   it.each([
     [422, "upstream-secret-code"],
     [502, "upstream-secret-code"],
