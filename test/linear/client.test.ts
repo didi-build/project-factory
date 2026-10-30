@@ -11,6 +11,12 @@ function jsonResponse(status: number, body: unknown, headers?: Record<string, st
   return new Response(JSON.stringify(body), { status, headers });
 }
 
+function graphQlRateLimitedOnHttp200() {
+  return jsonResponse(200, {
+    errors: [{ message: "Rate limited", extensions: { code: "RATELIMITED" } }],
+  });
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -158,8 +164,42 @@ describe("LinearClient", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("rate_limited");
+      expect(result.error.retryable).toBe(true);
+      expect(result.error.message).toBe(publicLinearErrorMessage(200, "rate_limited"));
     }
     expect(attempts).toBe(3);
+  });
+
+  it("forces retryable false on mutation GraphQL errors on HTTP 200", async () => {
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => graphQlRateLimitedOnHttp200(),
+    });
+
+    const result = await client.request(
+      "mutation CommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.message).toBe(publicLinearErrorMessage(200, "rate_limited"));
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  it("keeps query retryable on the same HTTP 200 GraphQL error as on main", async () => {
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => graphQlRateLimitedOnHttp200(),
+    });
+
+    const result = await client.request("query Teams { teams { nodes { id } } }");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.message).toBe(publicLinearErrorMessage(200, "rate_limited"));
+      expect(result.error.retryable).toBe(true);
+    }
   });
 
   it("does not retry mutations on 5xx", async () => {
