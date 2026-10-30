@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LinearClient,
   LINEAR_MUTATION_MAX_ATTEMPTS,
-  LINEAR_QUERY_MAX_ATTEMPTS,
   MAX_RETRY_AFTER_MS,
   publicLinearErrorMessage,
 } from "../../src/linear/client.js";
@@ -17,6 +16,10 @@ afterEach(() => {
 });
 
 describe("LinearClient", () => {
+  it("fixes mutation max attempts at one for mutant resistance", () => {
+    expect(LINEAR_MUTATION_MAX_ATTEMPTS).toBe(1);
+  });
+
   it("maps RATELIMITED on HTTP 400 to rate_limited and retries reads only", async () => {
     const apiKey = buildLinearApiKey();
     let attempts = 0;
@@ -38,7 +41,7 @@ describe("LinearClient", () => {
       expect(result.error.message).toBe(publicLinearErrorMessage(400, "rate_limited"));
       expect(result.error.message).not.toContain("Rate limit");
     }
-    expect(attempts).toBe(LINEAR_QUERY_MAX_ATTEMPTS);
+    expect(attempts).toBe(3);
   });
 
   it("maps AUTHENTICATION_ERROR on HTTP 400 to missing_secret", async () => {
@@ -175,7 +178,7 @@ describe("LinearClient", () => {
       "mutation ProjectCreate($input: ProjectCreateInput!) { projectCreate(input: $input) { success } }",
     );
     expect(result.ok).toBe(false);
-    expect(attempts).toBe(LINEAR_MUTATION_MAX_ATTEMPTS);
+    expect(attempts).toBe(1);
     if (!result.ok) {
       expect(result.error.retryable).toBe(false);
     }
@@ -199,7 +202,7 @@ describe("LinearClient", () => {
       "mutation IssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success } }",
     );
     expect(mutationResult.ok).toBe(false);
-    expect(mutationAttempts).toBe(LINEAR_MUTATION_MAX_ATTEMPTS);
+    expect(mutationAttempts).toBe(1);
 
     let queryAttempts = 0;
     const queryClient = new LinearClient({
@@ -213,7 +216,7 @@ describe("LinearClient", () => {
       "query Teams { teams { nodes { id } } }",
     );
     expect(queryResult.ok).toBe(false);
-    expect(queryAttempts).toBe(LINEAR_QUERY_MAX_ATTEMPTS);
+    expect(queryAttempts).toBe(3);
   });
 
   it("does not retry mutations on RATELIMITED HTTP 400", async () => {
@@ -232,7 +235,7 @@ describe("LinearClient", () => {
       "mutation LabelCreate($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success } }",
     );
     expect(result.ok).toBe(false);
-    expect(attempts).toBe(LINEAR_MUTATION_MAX_ATTEMPTS);
+    expect(attempts).toBe(1);
     if (!result.ok) {
       expect(result.error.code).toBe("rate_limited");
       expect(result.error.retryable).toBe(false);
@@ -255,7 +258,7 @@ describe("LinearClient", () => {
       "mutation RelationCreate($input: IssueRelationCreateInput!) { issueRelationCreate(input: $input) { success } }",
     );
     expect(result.ok).toBe(false);
-    expect(attempts).toBe(LINEAR_MUTATION_MAX_ATTEMPTS);
+    expect(attempts).toBe(1);
     if (!result.ok) {
       expect(result.error.code).toBe("rate_limited");
       expect(result.error.retryable).toBe(false);
