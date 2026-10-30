@@ -19,6 +19,10 @@ export type GraphQLResponse<T> = {
 
 export const MAX_RETRY_AFTER_MS = 10_000;
 
+/** Idempotent reads may retry; mutations must not (duplicate side effects). */
+export const LINEAR_QUERY_MAX_ATTEMPTS = 3;
+export const LINEAR_MUTATION_MAX_ATTEMPTS = 1;
+
 export function publicLinearErrorMessage(status: number, code: string): string {
   return `${status} ${code}`;
 }
@@ -90,7 +94,9 @@ export class LinearClient {
     }
 
     const mutation = isLinearMutation(query);
-    const maxAttempts = mutation ? 1 : 3;
+    const maxAttempts = mutation
+      ? LINEAR_MUTATION_MAX_ATTEMPTS
+      : LINEAR_QUERY_MAX_ATTEMPTS;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const response = await this.fetchImpl("https://api.linear.app/graphql", {
@@ -156,7 +162,13 @@ export class LinearClient {
           await new Promise((r) => setTimeout(r, (attempt + 1) * 500));
           continue;
         }
-        return { ok: false, error: err };
+        return {
+          ok: false,
+          error: {
+            ...err,
+            retryable: mutation ? false : err.retryable,
+          },
+        };
       }
 
       if (!body.data) {

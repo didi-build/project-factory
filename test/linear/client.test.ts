@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LinearClient,
+  LINEAR_MUTATION_MAX_ATTEMPTS,
+  LINEAR_QUERY_MAX_ATTEMPTS,
   MAX_RETRY_AFTER_MS,
   publicLinearErrorMessage,
 } from "../../src/linear/client.js";
@@ -36,7 +38,7 @@ describe("LinearClient", () => {
       expect(result.error.message).toBe(publicLinearErrorMessage(400, "rate_limited"));
       expect(result.error.message).not.toContain("Rate limit");
     }
-    expect(attempts).toBe(3);
+    expect(attempts).toBe(LINEAR_QUERY_MAX_ATTEMPTS);
   });
 
   it("maps AUTHENTICATION_ERROR on HTTP 400 to missing_secret", async () => {
@@ -173,7 +175,91 @@ describe("LinearClient", () => {
       "mutation ProjectCreate($input: ProjectCreateInput!) { projectCreate(input: $input) { success } }",
     );
     expect(result.ok).toBe(false);
-    expect(attempts).toBe(1);
+    expect(attempts).toBe(LINEAR_MUTATION_MAX_ATTEMPTS);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  it("sends mutations once on retryable HTTP errors while queries still retry", async () => {
+    const retryable502 = () =>
+      jsonResponse(502, {
+        errors: [{ message: "bad gateway", extensions: { code: "INTERNAL_ERROR" } }],
+      });
+
+    let mutationAttempts = 0;
+    const mutationClient = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => {
+        mutationAttempts += 1;
+        return retryable502();
+      },
+    });
+    const mutationResult = await mutationClient.request(
+      "mutation IssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success } }",
+    );
+    expect(mutationResult.ok).toBe(false);
+    expect(mutationAttempts).toBe(LINEAR_MUTATION_MAX_ATTEMPTS);
+
+    let queryAttempts = 0;
+    const queryClient = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => {
+        queryAttempts += 1;
+        return retryable502();
+      },
+    });
+    const queryResult = await queryClient.request(
+      "query Teams { teams { nodes { id } } }",
+    );
+    expect(queryResult.ok).toBe(false);
+    expect(queryAttempts).toBe(LINEAR_QUERY_MAX_ATTEMPTS);
+  });
+
+  it("does not retry mutations on RATELIMITED HTTP 400", async () => {
+    let attempts = 0;
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => {
+        attempts += 1;
+        return jsonResponse(400, {
+          errors: [{ message: "Rate limit", extensions: { code: "RATELIMITED" } }],
+        });
+      },
+    });
+
+    const result = await client.request(
+      "mutation LabelCreate($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success } }",
+    );
+    expect(result.ok).toBe(false);
+    expect(attempts).toBe(LINEAR_MUTATION_MAX_ATTEMPTS);
+    if (!result.ok) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  it("does not retry mutations on RATELIMITED inside HTTP 200 GraphQL errors", async () => {
+    let attempts = 0;
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => {
+        attempts += 1;
+        return jsonResponse(200, {
+          errors: [{ message: "Rate limited", extensions: { code: "RATELIMITED" } }],
+        });
+      },
+    });
+
+    const result = await client.request(
+      "mutation RelationCreate($input: IssueRelationCreateInput!) { issueRelationCreate(input: $input) { success } }",
+    );
+    expect(result.ok).toBe(false);
+    expect(attempts).toBe(LINEAR_MUTATION_MAX_ATTEMPTS);
+    if (!result.ok) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.retryable).toBe(false);
+    }
   });
 
   it("maps HTTP 401 to missing_secret", async () => {
