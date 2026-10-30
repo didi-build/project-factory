@@ -30,10 +30,14 @@ export type HarnessState = {
   ideaIssue?: boolean;
   ideaHasRelationToKickoff?: boolean;
   ideaRelationType?: string;
-  kickoffHasRelationToIdea?: boolean;
+  kickoffHasRelation?: boolean;
   kickoffRelationType?: string;
   /** Related issue id on kickoff relations (defaults to idea uuid when ideaIssue is set). */
   kickoffRelationRelatedIssueId?: string;
+  /** Second related link from kickoff to an unrelated issue (first link targets the idea). */
+  kickoffHasSecondRelation?: boolean;
+  /** When set, ProjectUpdate returns success: false with HTTP 200. */
+  projectUpdateSuccessFalse?: boolean;
   /** Factory-owned project exists but labels.nodes omits the repo label id. */
   existingProjectMissingRepoLabel?: boolean;
   /** When set with existingProjectMissingRepoLabel, project keeps this label but not the repo label. */
@@ -257,9 +261,7 @@ export function createHarnessClient(
         }
         if (state.kickoffExists) {
           const kickoffRelationType = state.kickoffRelationType ?? "related";
-          const relatedIssueId =
-            state.kickoffRelationRelatedIssueId ??
-            (state.kickoffHasRelationToIdea ? IDEA_ID : IDEA_ID);
+          const relatedIssueId = state.kickoffRelationRelatedIssueId ?? IDEA_ID;
           const relatedIdentifier =
             relatedIssueId === IDEA_ID
               ? "DIDI-830"
@@ -267,14 +269,33 @@ export function createHarnessClient(
                 ? "DIDI-999"
                 : "OTHER";
           const kickoffRelations =
-            state.kickoffHasRelationToIdea && state.ideaIssue
-              ? [
-                  {
-                    type: kickoffRelationType,
-                    issue: { id: KICKOFF_ID, identifier: "DIDI-900" },
-                    relatedIssue: { id: relatedIssueId, identifier: relatedIdentifier },
-                  },
-                ]
+            state.kickoffHasRelation && state.ideaIssue
+              ? state.kickoffHasSecondRelation
+                ? [
+                    {
+                      type: kickoffRelationType,
+                      issue: { id: KICKOFF_ID, identifier: "DIDI-900" },
+                      relatedIssue: { id: IDEA_ID, identifier: "DIDI-830" },
+                    },
+                    {
+                      type: kickoffRelationType,
+                      issue: { id: KICKOFF_ID, identifier: "DIDI-900" },
+                      relatedIssue: {
+                        id: DEFAULT_UNRELATED_ISSUE_ID,
+                        identifier: "DIDI-999",
+                      },
+                    },
+                  ]
+                : [
+                    {
+                      type: kickoffRelationType,
+                      issue: { id: KICKOFF_ID, identifier: "DIDI-900" },
+                      relatedIssue: {
+                        id: relatedIssueId,
+                        identifier: relatedIdentifier,
+                      },
+                    },
+                  ]
               : [];
           return new Response(
             JSON.stringify({
@@ -357,9 +378,8 @@ export function createHarnessClient(
         );
       }
       if (/mutation ProjectUpdate\b/.test(q)) {
-        return new Response(
-          JSON.stringify({ data: { projectUpdate: { success: true } } }),
-        );
+        const success = state.projectUpdateSuccessFalse !== true;
+        return new Response(JSON.stringify({ data: { projectUpdate: { success } } }));
       }
       if (q.includes("EntityExternalLinkCreate")) {
         return new Response(
