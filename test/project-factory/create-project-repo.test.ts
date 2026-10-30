@@ -1,7 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
 import { FACTORY_TOPIC } from "../../src/factory/constants.js";
-import { branchProtectionReportedOk } from "../../src/factory/branch-protection.js";
 import { createProjectRepo } from "../../src/tools/create-project-repo.js";
 import {
   EXPECTED_BRANCH_PROTECTION_PUT_BODY,
@@ -224,8 +223,8 @@ describe("createProjectRepo", () => {
       protection_ok: boolean | null;
       github: { protection_ok: boolean | null };
     };
-    expect(branchProtectionReportedOk(dryRun.protection_ok)).toBe(false);
-    expect(branchProtectionReportedOk(dryRun.github.protection_ok)).toBe(false);
+    expect(dryRun.protection_ok).not.toBe(true);
+    expect(dryRun.github.protection_ok).not.toBe(true);
   });
 
   it("dry_run reports conflict when repo exists without factory topic", async () => {
