@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
 import { FACTORY_TOPIC } from "../../src/factory/constants.js";
+import { branchProtectionReportedOk } from "../../src/factory/branch-protection.js";
 import { createProjectRepo } from "../../src/tools/create-project-repo.js";
 import {
   EXPECTED_BRANCH_PROTECTION_PUT_BODY,
@@ -150,7 +151,6 @@ describe("createProjectRepo", () => {
       status: "planned",
       dry_run: true,
       protection_ok: false,
-      summary: { branch_protection_ok: false },
       github: {
         github_installation_token_minted: true,
         repo_exists: false,
@@ -158,6 +158,7 @@ describe("createProjectRepo", () => {
         conflict_not_factory_owned: false,
       },
     });
+    expect("summary" in result).toBe(false);
     if (
       "cloudflare" in result &&
       result.cloudflare &&
@@ -174,8 +175,7 @@ describe("createProjectRepo", () => {
     expect(auditLine).toContain('"metadata":"read"');
   });
 
-  it("dry_run summary treats null protection_ok as not ok and true as ok", async () => {
-    const protectionOkBody = githubBranchProtectionApiBody();
+  it("dry_run omits new output fields and treats null protection_ok as not ok", async () => {
     const fetchProtectionFailure = buildDryRunFetch((req) => {
       if (req.url.includes("access_tokens")) {
         return { status: 201, body: { token: INSTALLATION_TOKEN } };
@@ -197,10 +197,10 @@ describe("createProjectRepo", () => {
       }
       return { status: 404, body: {} };
     });
-    const failedProtection = await createProjectRepo(
+    const result = await createProjectRepo(
       {
         env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
-        requestId: "req-summary-fail",
+        requestId: "req-dry-run-null-protection",
         caller: "test",
         fetchImpl: fetchProtectionFailure,
       },
@@ -211,52 +211,21 @@ describe("createProjectRepo", () => {
         dry_run: true,
       },
     );
-    expect("error" in failedProtection).toBe(false);
-    expect(failedProtection).toMatchObject({
+    expect("error" in result).toBe(false);
+    if ("error" in result) {
+      return;
+    }
+    expect("summary" in result).toBe(false);
+    expect(result).toMatchObject({
       protection_ok: null,
-      summary: { branch_protection_ok: false },
+      github: { protection_ok: null },
     });
-
-    const fetchProtectionOk = buildDryRunFetch((req) => {
-      if (req.url.includes("access_tokens")) {
-        return { status: 201, body: { token: INSTALLATION_TOKEN } };
-      }
-      if (req.url.includes("/app/installations/")) {
-        return {
-          status: 200,
-          body: { id: 175254357, account: { login: "didi-build" } },
-        };
-      }
-      if (req.url.endsWith("/repos/didi-build/demo-app")) {
-        return { status: 200, body: { full_name: "didi-build/demo-app" } };
-      }
-      if (req.url.endsWith("/topics")) {
-        return { status: 200, body: { names: ["project-factory"] } };
-      }
-      if (req.url.includes("/protection")) {
-        return { status: 200, body: protectionOkBody };
-      }
-      return { status: 404, body: {} };
-    });
-    const okProtection = await createProjectRepo(
-      {
-        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
-        requestId: "req-summary-ok",
-        caller: "test",
-        fetchImpl: fetchProtectionOk,
-      },
-      {
-        name: "demo-app",
-        description: "Demo",
-        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
-        dry_run: true,
-      },
-    );
-    expect("error" in okProtection).toBe(false);
-    expect(okProtection).toMatchObject({
-      protection_ok: true,
-      summary: { branch_protection_ok: true },
-    });
+    const dryRun = result as typeof result & {
+      protection_ok: boolean | null;
+      github: { protection_ok: boolean | null };
+    };
+    expect(branchProtectionReportedOk(dryRun.protection_ok)).toBe(false);
+    expect(branchProtectionReportedOk(dryRun.github.protection_ok)).toBe(false);
   });
 
   it("dry_run reports conflict when repo exists without factory topic", async () => {

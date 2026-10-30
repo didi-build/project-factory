@@ -19,12 +19,7 @@ import { STANDARD_FACTORY_LABELS, standardLabelNames } from "../factory/labels.j
 import { validateProjectName } from "../factory/naming.js";
 import { GitHubClient } from "../github/client.js";
 import { mapGithubFailure } from "../github/github-errors.js";
-import {
-  buildCreateProjectRepoDryRunPlan,
-  summarizeCreateProjectRepoDryRunPlan,
-  type CreateProjectRepoDryRunSummary,
-  type DryRunPlan,
-} from "./dry-run-plan.js";
+import { buildCreateProjectRepoDryRunPlan } from "./dry-run-plan.js";
 import type { FactoryError, FactoryStep, FactorySuccess } from "./types.js";
 
 export type CreateProjectRepoInput = {
@@ -216,11 +211,7 @@ export async function createProjectRepo(
           ? { ...plan.github.github_installation_token_permissions }
           : undefined,
       };
-      return {
-        request_id: ctx.requestId,
-        ...plan,
-        summary: summarizeCreateProjectRepoDryRunPlan(plan),
-      } as FactorySuccess & DryRunPlan & { summary: CreateProjectRepoDryRunSummary };
+      return { request_id: ctx.requestId, ...plan };
     }
 
     if (!ctx.env.PROJECT_FACTORY_GH_PRIVATE_KEY) {

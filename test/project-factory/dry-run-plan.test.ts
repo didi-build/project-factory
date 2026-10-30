@@ -1,9 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ProjectFactoryEnv } from "../../src/env.js";
-import {
-  buildCreateProjectRepoDryRunPlan,
-  summarizeCreateProjectRepoDryRunPlan,
-} from "../../src/tools/dry-run-plan.js";
+import { buildCreateProjectRepoDryRunPlan } from "../../src/tools/dry-run-plan.js";
+import { branchProtectionReportedOk } from "../../src/factory/branch-protection.js";
 import { EXPECTED_DRY_RUN_INSTALLATION_TOKEN_PERMISSIONS } from "./expected-github-payloads.js";
 import { fakePkcs8Pem } from "./github-mock.js";
 
@@ -241,7 +239,8 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
     const plan = built.plan;
     expect(plan.github.protection_ok).toBeNull();
     expect(plan.protection_ok).toBeNull();
-    expect(summarizeCreateProjectRepoDryRunPlan(plan).branch_protection_ok).toBe(false);
+    expect(branchProtectionReportedOk(plan.protection_ok)).toBe(false);
+    expect(branchProtectionReportedOk(plan.github.protection_ok)).toBe(false);
     const protectionStep = plan.steps.find((s) => s.id === "read_branch_protection");
     expect(protectionStep).toMatchObject({ status: "failed" });
     expect(plan.warnings.some((w) => w.includes("GET branch protection failed"))).toBe(
@@ -296,7 +295,7 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
     expect(plan.github.repo_exists).toBe(false);
     expect(plan.github.protection_ok).toBe(false);
     expect(plan.protection_ok).toBe(false);
-    expect(summarizeCreateProjectRepoDryRunPlan(plan).branch_protection_ok).toBe(false);
+    expect(branchProtectionReportedOk(plan.protection_ok)).toBe(false);
   });
 
   it("leaves top-level protection_ok null when GitHub App credentials are not configured", async () => {
@@ -320,6 +319,7 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
     }
     expect(built.plan.protection_ok).toBeNull();
     expect(built.plan.github.protection_ok).toBeNull();
+    expect(branchProtectionReportedOk(built.plan.protection_ok)).toBe(false);
   });
 
   it("leaves top-level protection_ok null when the repo read fails with non-404", async () => {
@@ -368,6 +368,8 @@ describe("buildCreateProjectRepoDryRunPlan", () => {
     const plan = built.plan;
     expect(plan.github.repo_exists).toBeNull();
     expect(plan.protection_ok).toBeNull();
+    expect(plan.github.protection_ok).toBeNull();
+    expect(branchProtectionReportedOk(plan.protection_ok)).toBe(false);
     expect(
       plan.warnings.some((w) => w.includes("GET /repos/didi-build/demo-app failed")),
     ).toBe(true);

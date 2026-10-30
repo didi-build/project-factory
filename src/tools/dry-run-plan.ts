@@ -1,10 +1,7 @@
 import type { CloudflareDryRunRead } from "../cloudflare/dry-run-reads.js";
 import { cloudflareDryRunReads } from "../cloudflare/dry-run-reads.js";
 import type { ProjectFactoryEnv } from "../env.js";
-import {
-  branchProtectionReportedOk,
-  protectionLooksCorrect,
-} from "../factory/branch-protection.js";
+import { protectionLooksCorrect } from "../factory/branch-protection.js";
 import { DEFAULT_BRANCH, FACTORY_TOPIC } from "../factory/constants.js";
 import { STANDARD_FACTORY_LABELS, standardLabelNames } from "../factory/labels.js";
 import { GitHubAppClient } from "../github/app-client.js";
@@ -99,7 +96,7 @@ export async function buildCreateProjectRepoDryRunPlan(
     repo_exists: null,
     factory_owned: null,
     conflict_not_factory_owned: false,
-    protection_ok: null,
+    protection_ok: false,
   };
 
   let protectionOk: boolean | null = null;
@@ -314,18 +311,5 @@ export async function buildCreateProjectRepoDryRunPlan(
       github,
       cloudflare,
     },
-  };
-}
-
-export type CreateProjectRepoDryRunSummary = {
-  branch_protection_ok: boolean;
-};
-
-/** Fail-closed summary for dry-run consumers (null protection_ok is not OK). */
-export function summarizeCreateProjectRepoDryRunPlan(
-  plan: Pick<DryRunPlan, "protection_ok">,
-): CreateProjectRepoDryRunSummary {
-  return {
-    branch_protection_ok: branchProtectionReportedOk(plan.protection_ok),
   };
 }
