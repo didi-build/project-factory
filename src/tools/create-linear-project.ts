@@ -365,6 +365,15 @@ export async function createLinearProject(
           failedStep = "linear_project";
           return mapped;
         }
+        if (!update.data.projectUpdate.success) {
+          auditStatus = "upstream_error";
+          failedStep = "linear_project";
+          return factoryError(
+            "upstream_error",
+            "projectUpdate failed",
+            "linear_project",
+          );
+        }
         steps.push({ id: "linear_project_repair", status: "done" });
       }
     }
