@@ -422,6 +422,7 @@ describe("createLinearProject", () => {
     expect(calls.some((c) => c.query.includes("ProjectUpdate"))).toBe(true);
     const line = auditLine(logSpy, "repair-label-success-false");
     expect(line).toContain('"failed_step":"linear_project"');
+    expect(line).toContain('"status":"upstream_error"');
     expect(line).not.toContain("linear_project_repair");
   });
 
