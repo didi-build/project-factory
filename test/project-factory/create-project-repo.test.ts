@@ -149,6 +149,8 @@ describe("createProjectRepo", () => {
     expect(result).toMatchObject({
       status: "planned",
       dry_run: true,
+      protection_ok: false,
+      summary: { branch_protection_ok: false },
       github: {
         github_installation_token_minted: true,
         repo_exists: false,
@@ -170,6 +172,91 @@ describe("createProjectRepo", () => {
     expect(auditLine).not.toContain(INSTALLATION_TOKEN);
     expect(auditLine).toContain('"github_installation_token_minted":true');
     expect(auditLine).toContain('"metadata":"read"');
+  });
+
+  it("dry_run summary treats null protection_ok as not ok and true as ok", async () => {
+    const protectionOkBody = githubBranchProtectionApiBody();
+    const fetchProtectionFailure = buildDryRunFetch((req) => {
+      if (req.url.includes("access_tokens")) {
+        return { status: 201, body: { token: INSTALLATION_TOKEN } };
+      }
+      if (req.url.includes("/app/installations/")) {
+        return {
+          status: 200,
+          body: { id: 175254357, account: { login: "didi-build" } },
+        };
+      }
+      if (req.url.endsWith("/repos/didi-build/demo-app")) {
+        return { status: 200, body: { full_name: "didi-build/demo-app" } };
+      }
+      if (req.url.endsWith("/topics")) {
+        return { status: 200, body: { names: ["project-factory"] } };
+      }
+      if (req.url.includes("/protection")) {
+        return { status: 502, body: { message: "upstream protection error" } };
+      }
+      return { status: 404, body: {} };
+    });
+    const failedProtection = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-summary-fail",
+        caller: "test",
+        fetchImpl: fetchProtectionFailure,
+      },
+      {
+        name: "demo-app",
+        description: "Demo",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: true,
+      },
+    );
+    expect("error" in failedProtection).toBe(false);
+    expect(failedProtection).toMatchObject({
+      protection_ok: null,
+      summary: { branch_protection_ok: false },
+    });
+
+    const fetchProtectionOk = buildDryRunFetch((req) => {
+      if (req.url.includes("access_tokens")) {
+        return { status: 201, body: { token: INSTALLATION_TOKEN } };
+      }
+      if (req.url.includes("/app/installations/")) {
+        return {
+          status: 200,
+          body: { id: 175254357, account: { login: "didi-build" } },
+        };
+      }
+      if (req.url.endsWith("/repos/didi-build/demo-app")) {
+        return { status: 200, body: { full_name: "didi-build/demo-app" } };
+      }
+      if (req.url.endsWith("/topics")) {
+        return { status: 200, body: { names: ["project-factory"] } };
+      }
+      if (req.url.includes("/protection")) {
+        return { status: 200, body: protectionOkBody };
+      }
+      return { status: 404, body: {} };
+    });
+    const okProtection = await createProjectRepo(
+      {
+        env: { ...env, PROJECT_FACTORY_GH_PRIVATE_KEY: privateKeyPem },
+        requestId: "req-summary-ok",
+        caller: "test",
+        fetchImpl: fetchProtectionOk,
+      },
+      {
+        name: "demo-app",
+        description: "Demo",
+        approval_ref: "https://linear.app/didi-build/issue/DIDI-1",
+        dry_run: true,
+      },
+    );
+    expect("error" in okProtection).toBe(false);
+    expect(okProtection).toMatchObject({
+      protection_ok: true,
+      summary: { branch_protection_ok: true },
+    });
   });
 
   it("dry_run reports conflict when repo exists without factory topic", async () => {
