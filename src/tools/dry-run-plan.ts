@@ -96,7 +96,7 @@ export async function buildCreateProjectRepoDryRunPlan(
     repo_exists: null,
     factory_owned: null,
     conflict_not_factory_owned: false,
-    protection_ok: false,
+    protection_ok: null,
   };
 
   let protectionOk: boolean | null = null;
