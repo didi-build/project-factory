@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LinearClient,
+  LINEAR_MUTATION_MAX_ATTEMPTS,
   MAX_RETRY_AFTER_MS,
   publicLinearErrorMessage,
 } from "../../src/linear/client.js";
@@ -10,11 +11,21 @@ function jsonResponse(status: number, body: unknown, headers?: Record<string, st
   return new Response(JSON.stringify(body), { status, headers });
 }
 
+function graphQlRateLimitedOnHttp200() {
+  return jsonResponse(200, {
+    errors: [{ message: "Rate limited", extensions: { code: "RATELIMITED" } }],
+  });
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe("LinearClient", () => {
+  it("fixes mutation max attempts at one for mutant resistance", () => {
+    expect(LINEAR_MUTATION_MAX_ATTEMPTS).toBe(1);
+  });
+
   it("maps RATELIMITED on HTTP 400 to rate_limited and retries reads only", async () => {
     const apiKey = buildLinearApiKey();
     let attempts = 0;
@@ -153,8 +164,42 @@ describe("LinearClient", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("rate_limited");
+      expect(result.error.retryable).toBe(true);
+      expect(result.error.message).toBe(publicLinearErrorMessage(200, "rate_limited"));
     }
     expect(attempts).toBe(3);
+  });
+
+  it("forces retryable false on mutation GraphQL errors on HTTP 200", async () => {
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => graphQlRateLimitedOnHttp200(),
+    });
+
+    const result = await client.request(
+      "mutation CommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.message).toBe(publicLinearErrorMessage(200, "rate_limited"));
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  it("keeps query retryable on the same HTTP 200 GraphQL error as on main", async () => {
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => graphQlRateLimitedOnHttp200(),
+    });
+
+    const result = await client.request("query Teams { teams { nodes { id } } }");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.message).toBe(publicLinearErrorMessage(200, "rate_limited"));
+      expect(result.error.retryable).toBe(true);
+    }
   });
 
   it("does not retry mutations on 5xx", async () => {
@@ -174,6 +219,90 @@ describe("LinearClient", () => {
     );
     expect(result.ok).toBe(false);
     expect(attempts).toBe(1);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  it("sends mutations once on retryable HTTP errors while queries still retry", async () => {
+    const retryable502 = () =>
+      jsonResponse(502, {
+        errors: [{ message: "bad gateway", extensions: { code: "INTERNAL_ERROR" } }],
+      });
+
+    let mutationAttempts = 0;
+    const mutationClient = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => {
+        mutationAttempts += 1;
+        return retryable502();
+      },
+    });
+    const mutationResult = await mutationClient.request(
+      "mutation IssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success } }",
+    );
+    expect(mutationResult.ok).toBe(false);
+    expect(mutationAttempts).toBe(1);
+
+    let queryAttempts = 0;
+    const queryClient = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => {
+        queryAttempts += 1;
+        return retryable502();
+      },
+    });
+    const queryResult = await queryClient.request(
+      "query Teams { teams { nodes { id } } }",
+    );
+    expect(queryResult.ok).toBe(false);
+    expect(queryAttempts).toBe(3);
+  });
+
+  it("does not retry mutations on RATELIMITED HTTP 400", async () => {
+    let attempts = 0;
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => {
+        attempts += 1;
+        return jsonResponse(400, {
+          errors: [{ message: "Rate limit", extensions: { code: "RATELIMITED" } }],
+        });
+      },
+    });
+
+    const result = await client.request(
+      "mutation LabelCreate($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success } }",
+    );
+    expect(result.ok).toBe(false);
+    expect(attempts).toBe(1);
+    if (!result.ok) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  it("does not retry mutations on RATELIMITED inside HTTP 200 GraphQL errors", async () => {
+    let attempts = 0;
+    const client = new LinearClient({
+      apiKey: buildLinearApiKey(),
+      fetchImpl: async () => {
+        attempts += 1;
+        return jsonResponse(200, {
+          errors: [{ message: "Rate limited", extensions: { code: "RATELIMITED" } }],
+        });
+      },
+    });
+
+    const result = await client.request(
+      "mutation RelationCreate($input: IssueRelationCreateInput!) { issueRelationCreate(input: $input) { success } }",
+    );
+    expect(result.ok).toBe(false);
+    expect(attempts).toBe(1);
+    if (!result.ok) {
+      expect(result.error.code).toBe("rate_limited");
+      expect(result.error.retryable).toBe(false);
+    }
   });
 
   it("maps HTTP 401 to missing_secret", async () => {
