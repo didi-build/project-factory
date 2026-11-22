@@ -39,7 +39,7 @@
     ]
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20261108.1",
+    "@cloudflare/workers-types": "5.20261115.1",
     "@didi-build/nodrift": "0.1.0",
     "@eslint/js": "9.39.5",
     "@secretlint/secretlint-rule-preset-recommend": "10.2.2",
@@ -48,12 +48,12 @@
     "globals": "16.5.0",
     "husky": "9.1.7",
     "lint-staged": "16.4.0",
-    "prettier": "3.9.10",
+    "prettier": "3.10.1",
     "secretlint": "10.2.2",
     "typescript": "5.9.3",
     "typescript-eslint": "8.72.2",
     "vitest": "3.2.7",
-    "wrangler": "4.158.0",
+    "wrangler": "4.162.0",
     "yaml": "2.9.1"
   },
   "dependencies": {
